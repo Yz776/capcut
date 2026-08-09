@@ -19,6 +19,51 @@ Pure Node.js API untuk otomatisasi CapCut: ambil template, sisipkan 2+ gambar, r
 - formidable (multipart parser)
 - axios (image download)
 - pino (logger)
+- **ffmpeg + ffprobe** (required by the ffmpeg fallback composer — the default
+  render path when `CAPCUT_EDITOR_ENABLED=false`)
+
+## Setup
+
+### 0. Install ffmpeg (REQUIRED)
+
+The default render path (`CAPCUT_EDITOR_ENABLED=false`) overlays user images
+onto the template preview MP4 using ffmpeg. Both `ffmpeg` and `ffprobe` must
+be callable from the Node process.
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y ffmpeg
+
+# macOS (Homebrew)
+brew install ffmpeg
+
+# Alpine
+apk add --no-cache ffmpeg
+
+# Or, if you've already cloned this repo, this script also installs ffmpeg:
+bash scripts/install-deps.sh
+```
+
+Verify:
+
+```bash
+which ffmpeg       # e.g. /usr/bin/ffmpeg
+which ffprobe      # e.g. /usr/bin/ffprobe
+ffmpeg -version
+```
+
+**If ffmpeg is installed but the Node process still can't find it** (very
+common with `pm2`, `systemd`, Docker slim images, or VS Code task launchers
+that strip `PATH`), set absolute paths in `.env`:
+
+```dotenv
+FFMPEG_PATH=/usr/bin/ffmpeg
+FFPROBE_PATH=/usr/bin/ffprobe
+```
+
+Without ffmpeg, every `POST /render` will fail at ~42% progress with
+`spawn ffprobe ENOENT` (or, with this fix, a friendlier error message that
+includes the same install instructions).
 
 ## Setup
 
@@ -334,6 +379,28 @@ Render butuh >5 menit. Naikkan `RENDER_TIMEOUT` di `.env`, atau template terlalu
 
 **Browser crash / SIGKILL**
 Memory kurang. Turunkan `MAX_CONCURRENT_JOBS=1`, atau tambah RAM swap.
+
+**`spawn ffprobe ENOENT` / `spawn ffmpeg ENOENT` / job fails at ~42% with "[ffmpeg] Probing template video"**
+The Node process can't find `ffmpeg` or `ffprobe` in its `PATH`. Fixes (in order of preference):
+
+1. Install ffmpeg on the host:
+   ```bash
+   sudo apt-get install -y ffmpeg      # Debian/Ubuntu
+   brew install ffmpeg                 # macOS
+   apk add --no-cache ffmpeg           # Alpine
+   ```
+2. If ffmpeg is installed but the Node process still can't find it (very common
+   when launched via `pm2`, `systemd`, Docker slim images, or VS Code tasks
+   that strip `PATH`), set absolute paths in `.env`:
+   ```dotenv
+   FFMPEG_PATH=/usr/bin/ffmpeg
+   FFPROBE_PATH=/usr/bin/ffprobe
+   ```
+   Verify the real paths with `which ffmpeg` / `which ffprobe` from a normal
+   shell, then restart the API.
+3. Or rerun `bash scripts/install-deps.sh` (now also installs ffmpeg).
+
+After applying the fix, restart the API server and re-submit the render job.
 
 ## License
 

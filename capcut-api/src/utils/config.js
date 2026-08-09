@@ -50,6 +50,15 @@ export const config = {
     tmpTtlMinutes: int(process.env.TMP_TTL_MINUTES, 60),
   },
 
+  // FFmpeg / ffprobe binary resolution.
+  // Defaults to bare names ('ffmpeg' / 'ffprobe') which rely on PATH lookup.
+  // If the Node process can't find them (common with pm2/systemd/Docker/VS Code
+  // launchers that strip PATH), set FFMPEG_PATH / FFPROBE_PATH to absolute paths.
+  ffmpeg: {
+    path: process.env.FFMPEG_PATH || 'ffmpeg',
+    ffprobePath: process.env.FFPROBE_PATH || 'ffprobe',
+  },
+
   jobs: {
     maxConcurrent: int(process.env.MAX_CONCURRENT_JOBS, 1),
     ttlMinutes: int(process.env.JOB_TTL_MINUTES, 120),

@@ -21,8 +21,74 @@ import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import axios from 'axios';
 import { logger } from '../utils/logger.js';
+import { config } from '../utils/config.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Cached result of the ffmpeg/ffprobe availability probe.
+ * `null` = not checked yet; `true` = OK; `Error` = missing.
+ */
+let ffmpegCheckResult = null;
+
+/**
+ * Verify that ffmpeg AND ffprobe are callable from the current process.
+ * Caches the result so we only pay the spawn cost once per process.
+ *
+ * Throws a human-actionable Error (with install instructions) if either
+ * binary is missing — much friendlier than the cryptic `spawn ffprobe ENOENT`.
+ */
+async function ensureFfmpegAvailable() {
+  if (ffmpegCheckResult === true) return;
+  if (ffmpegCheckResult instanceof Error) throw ffmpegCheckResult;
+
+  const ffmpegBin = config.ffmpeg.path;
+  const ffprobeBin = config.ffmpeg.ffprobePath;
+
+  const checkBin = async (bin, label) => {
+    try {
+      await execFileAsync(bin, ['-version'], { maxBuffer: 64 * 1024, timeout: 5000 });
+      return null;
+    } catch (e) {
+      if (e.code === 'ENOENT') {
+        return new Error(
+          `${label} binary not found (${bin}). The capcut-api ffmpeg fallback cannot run without it.\n` +
+          `Fix one of:\n` +
+          `  1. Install ffmpeg on this host:\n` +
+          `       Debian/Ubuntu:  sudo apt-get install -y ffmpeg\n` +
+          `       macOS (brew):   brew install ffmpeg\n` +
+          `       Alpine:         apk add --no-cache ffmpeg\n` +
+          `  2. If ffmpeg is installed but not on the Node process PATH, set an env var\n` +
+          `     pointing to the absolute binary path:\n` +
+          `       FFMPEG_PATH=/usr/bin/ffmpeg\n` +
+          `       FFPROBE_PATH=/usr/bin/ffprobe\n` +
+          `     (verify with 'which ffmpeg' / 'which ffprobe' from a normal shell)\n` +
+          `  3. Or rerun: bash scripts/install-deps.sh\n`
+        );
+      }
+      return new Error(`${label} check failed (${bin}): ${e.message}`);
+    }
+  };
+
+  const errs = [];
+  for (const [bin, label] of [[ffmpegBin, 'ffmpeg'], [ffprobeBin, 'ffprobe']]) {
+    const e = await checkBin(bin, label);
+    if (e) errs.push(e);
+  }
+
+  if (errs.length) {
+    // Throw the first error but include both binary names if both are missing.
+    const err = errs[0];
+    if (errs.length > 1) {
+      err.message = `Both ffmpeg and ffprobe are missing. ${err.message}`;
+    }
+    ffmpegCheckResult = err;
+    throw err;
+  }
+
+  ffmpegCheckResult = true;
+  logger.info({ ffmpeg: ffmpegBin, ffprobe: ffprobeBin }, 'ffmpeg/ffprobe available');
+}
 
 /**
  * Compose video dengan overlay images ke template preview video.
@@ -41,6 +107,10 @@ export async function composeTemplateVideo({ template, imagePaths, outputPath, l
     throw new Error('Template must have videoUrl (preview MP4). Run getTemplateInfo first.');
   }
   if (!outputPath) throw new Error('outputPath required');
+
+  // Fail fast with a clear message if ffmpeg/ffprobe are not callable.
+  // This prevents the cryptic `spawn ffprobe ENOENT` error at progress 42%.
+  await ensureFfmpegAvailable();
 
   const progress = (pct, msg) => {
     logger.info({ pct, msg }, 'compose progress');
@@ -148,7 +218,7 @@ export async function composeTemplateVideo({ template, imagePaths, outputPath, l
   ];
 
   logger.info({ cmd: 'ffmpeg ' + args.join(' ').slice(0, 500) }, 'Running ffmpeg');
-  const { stdout, stderr } = await execFileAsync('ffmpeg', args, {
+  const { stdout, stderr } = await execFileAsync(config.ffmpeg.path, args, {
     maxBuffer: 10 * 1024 * 1024,
     timeout: 300000,
   });
@@ -204,7 +274,7 @@ async function downloadFile(url, destPath, { timeout = 60000 } = {}) {
  * Probe video dimensions & duration with ffprobe.
  */
 async function probeVideo(filePath) {
-  const { stdout } = await execFileAsync('ffprobe', [
+  const { stdout } = await execFileAsync(config.ffmpeg.ffprobePath, [
     '-v', 'error',
     '-select_streams', 'v:0',
     '-show_entries', 'stream=width,height,duration',
