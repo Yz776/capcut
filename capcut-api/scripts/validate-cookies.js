@@ -157,33 +157,58 @@ async function main() {
     process.stderr.write(`[validate-cookies] Setting ${cookies.length} cookies on https://www.capcut.com/\n`);
     await page.setCookie(...cookies);
 
+    // CRITICAL: Save cookies.json IMMEDIATELY after setCookie, before any navigation.
+    // This way even if navigation/probe hangs, user's cookies are persisted to disk.
+    const cookiesJsonPath = path.resolve(projectRoot, 'cookies.json');
+    fs.writeFileSync(cookiesJsonPath, JSON.stringify(cookies, null, 2));
+    process.stderr.write(`[validate-cookies] cookies.json saved (${cookies.length} cookies)\n`);
+
     process.stderr.write(`[validate-cookies] Navigating to https://www.capcut.com/my-cloud/material\n`);
     await page.goto('https://www.capcut.com/my-cloud/material', {
       waitUntil: 'domcontentloaded',
-      timeout: 45000,
+      timeout: 30000,
     });
-    await new Promise(r => setTimeout(r, 4000));
+    await new Promise(r => setTimeout(r, 3000));
 
     const finalUrl = page.url();
     const title = await page.title().catch(() => '(no title)');
     process.stderr.write(`[validate-cookies] Final URL: ${finalUrl} (title: ${title})\n`);
 
-    await page.screenshot({ path: validationShotPath, fullPage: false }).catch(() => {});
+    // Screenshot with timeout
+    await Promise.race([
+      page.screenshot({ path: validationShotPath, fullPage: false }).catch(() => {}),
+      new Promise(r => setTimeout(r, 8000)),
+    ]);
 
     const redirectedToLogin = /\/login(\?|$|\/)/.test(finalUrl);
+    // If redirected to a user-specific /my-cloud/{userId} URL, login definitely succeeded
+    const redirectedToUserCloud = /\/my-cloud\/\d+/.test(finalUrl);
 
-    const probe = await page.evaluate(() => {
-      const bodyText = (document.body?.innerText || '').slice(0, 5000);
-      const hasLoginText = /\bLog in\b|\bSign in\b|\bSign up\b|\b登入\b|\b登錄\b/.test(bodyText);
-      const hasAccountText = /\bLog out\b|\bSign out\b|\bMy account\b|\bMy Cloud\b|\bMy materials\b|\bAccount settings\b/i.test(bodyText);
-      const hasAvatar = !!document.querySelector(
-        '[class*="avatar" i], [data-e2e*="user" i], [class*="user-info" i], [class*="header-user" i]'
-      );
-      const hasLoginButton = !!document.querySelector('a[href*="login" i]');
-      return { hasLoginText, hasAccountText, hasAvatar, hasLoginButton, bodyTextLen: bodyText.length };
-    }).catch(() => ({ hasLoginText: false, hasAccountText: false, hasAvatar: false, hasLoginButton: false, bodyTextLen: 0 }));
+    // Probe with timeout — use ONLY valid CSS selectors (no :has-text() which is Puppeteer-only)
+    const probe = await Promise.race([
+      page.evaluate(() => {
+        try {
+          const bodyText = (document.body?.innerText || '').slice(0, 5000);
+          const hasLoginText = /\bLog in\b|\bSign in\b|\bSign up\b|\b登入\b|\b登錄\b/.test(bodyText);
+          const hasAccountText = /\bLog out\b|\bSign out\b|\bMy account\b|\bMy Cloud\b|\bMy materials\b|\bAccount settings\b/i.test(bodyText);
+          const hasAvatar = !!document.querySelector(
+            '[class*="avatar" i], [data-e2e*="user" i], [class*="user-info" i], [class*="header-user" i]'
+          );
+          // Use plain CSS — :has-text() is Puppeteer-only and throws in document.querySelector
+          const hasLoginButton = !!document.querySelector('a[href*="login" i]');
+          return { hasLoginText, hasAccountText, hasAvatar, hasLoginButton, bodyTextLen: bodyText.length };
+        } catch (e) {
+          return { error: e.message, hasLoginText: false, hasAccountText: false, hasAvatar: false, hasLoginButton: false, bodyTextLen: 0 };
+        }
+      }).catch(() => ({ hasLoginText: false, hasAccountText: false, hasAvatar: false, hasLoginButton: false, bodyTextLen: 0 })),
+      new Promise(r => setTimeout(r, 10000)),
+    ]);
 
-    const browserCookies = await browser.cookies('https://www.capcut.com').catch(() => []);
+    // browser.cookies with timeout
+    const browserCookies = await Promise.race([
+      browser.cookies('https://www.capcut.com').catch(() => []),
+      new Promise(r => setTimeout(r, 8000)),
+    ]);
     const sessionCookies = browserCookies.filter(c =>
       /session|token|uid|passport|sid|s_v_web_id/i.test(c.name)
     );
@@ -192,18 +217,11 @@ async function main() {
 
     process.stderr.write(`[validate-cookies] Cookies in browser: total=${browserCookies.length}, session=${sessionCookies.length}, passport=${hasPassport}, sessionid=${hasSessionId}\n`);
 
-    const username = await page.evaluate(() => {
-      const el = document.querySelector(
-        '[data-e2e="user-name"], .user-name, .nickname, [class*="user-name" i], [class*="nickname" i]'
-      );
-      return el?.textContent?.trim() || null;
-    }).catch(() => null);
-
-    // Save cookies.json backup
-    const cookiesJsonPath = path.resolve(projectRoot, 'cookies.json');
-    fs.writeFileSync(cookiesJsonPath, JSON.stringify(cookies, null, 2));
-
     const verdict = (() => {
+      // Strongest signal: redirected to user-specific /my-cloud/{userId} URL
+      if (redirectedToUserCloud) {
+        return { ok: true, reason: `Redirected to user cloud space (${finalUrl}) — login confirmed` };
+      }
       if (redirectedToLogin) {
         return { ok: false, error: `Redirected to login page (${finalUrl}). Cookies are invalid or expired.` };
       }

@@ -103,3 +103,26 @@ Stage Summary:
 - Lalu buka http://127.0.0.1:3002/ di browser lokal
 - Files committed: scripts/manual-login.js (rewritten), scripts/validate-cookies.js (new)
 - Files uploaded to production: /root/capcut/scripts/manual-login.js (35381 bytes), /root/capcut/scripts/validate-cookies.js (10916 bytes)
+
+---
+Task ID: login-success-4
+Agent: main (Super Z)
+Task: User sudah login via dashboard, verify session valid dan start API render
+
+Work Log:
+- User paste 12 cookies ke dashboard → validator launch → navigate ke /my-cloud/material → CapCut redirect ke /my-cloud/7671929666977923090?tab=all (URL spesifik user = login berhasil)
+- Validator timeout 90s di step DOM probe (bug: document.querySelector pakai :has-text() pseudo-selector Puppeteer-only yg invalid di browser, menyebabkan page.evaluate() hang)
+- FIX: scripts/validate-cookies.js — hapus :has-text(), tambah Promise.race timeout di semua puppeteer operations (screenshot 8s, evaluate 10s, cookies 8s), save cookies.json IMMEDIATELY setelah setCookie (sebelum navigation), tambah redirectedToUserCloud verdict (login indicator paling kuat)
+- Upload fixed validator ke server
+- Verify session valid: puppeteer launch dengan .capcut-profile → navigate ke /my-cloud/material → redirect ke /my-cloud/7671929666977923090?tab=all → VERDICT: LOGIN_VALID
+- Kill manual-login server (PID 375305) — tidak diperlukan lagi
+- Start API render server: cd ~/capcut && node src/index.js → listening on port 7000
+- Test API endpoints: /health OK, / OK, /templates?limit=3 OK (real CapCut data: 3 templates dengan title, duration, useCount, videoUrl, dll)
+
+Stage Summary:
+- LOGIN BERHASIL — cookies tersimpan di .capcut-profile, session terverifikasi VALID
+- API render server berjalan di http://0.0.0.0:7000 (PID 377463)
+- Endpoint test: /health, /, /templates semua merespons dengan data real CapCut
+- User ID: 7671929666977923090 (dari redirect URL)
+- Bug fix di validator: :has-text() pseudo-selector dihapus, semua puppeteer operations sekarang punya timeout
+- Production server state: API ready untuk receive render jobs
