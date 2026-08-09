@@ -1,5 +1,7 @@
 // src/services/capcut-browser.js
 import puppeteer from 'puppeteer';
+import fs from 'node:fs';
+import path from 'node:path';
 import { config } from '../utils/config.js';
 import { sleep } from '../utils/paths.js';
 import { logger } from '../utils/logger.js';
@@ -40,7 +42,9 @@ const SELECTORS = {
   // Tunggu sampai TIDAK ada class "lv-btn-disabled"
   renderButton: 'button.export-video-btn',
   renderButtonActive: 'button.export-video-btn:not(.lv-btn-disabled)',
-  uploadButton: 'button:has-text("Upload"), [class*="upload" i] button',
+  // NOTE: jangan pakai :has-text() — itu syntax Playwright, BUKAN Puppeteer.
+  // Pakai page.evaluate + textContent filter untuk cari tombol by-text.
+  uploadButton: '[class*="upload" i] button, button[class*="upload" i]',
   fileInput: 'input[type="file"]',
   renderProgress: '[class*="progress" i], [role="progressbar"]',
   renderDone: 'a[download], a[href*=".mp4"], [class*="download" i] a[href]',
@@ -52,6 +56,28 @@ const SELECTORS = {
   signInModal: '.lv_sign_in_panel_wide_base_page, [class*="sign_in_panel" i]',
 };
 
+/**
+ * Hapus SingletonLock/SingletonCookie/SingletonSocket dari userDataDir.
+ *
+ * Chromium bikin file-file ini saat launch untuk mencegah multi-instance.
+ * Kalau process Chromium sebelumnya crash tanpa cleanup, file-file ini tetap ada
+ * dan bikin launch berikutnya gagal dengan error:
+ *   "Failed to create SingletonLock: File exists"
+ *
+ * Aman dihapus karena kita selalu launch 1 instance per process.
+ */
+function cleanupChromiumLocks(userDataDir) {
+  if (!userDataDir) return;
+  for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    const lockPath = path.join(userDataDir, lockFile);
+    try {
+      fs.rmSync(lockPath, { force: true });
+    } catch (_) {
+      // ignore
+    }
+  }
+}
+
 export class CapCutBrowser {
   constructor() {
     this.browser = null;
@@ -61,6 +87,12 @@ export class CapCutBrowser {
   }
 
   async launch() {
+    // Cleanup stale SingletonLock dari previous crashed Chromium instance.
+    // Tanpa ini, launch bisa gagal dengan "Failed to create SingletonLock: File exists".
+    if (config.browser.userDataDir) {
+      cleanupChromiumLocks(config.browser.userDataDir);
+    }
+
     const launchOpts = {
       headless: config.browser.headless,
       slowMo: config.browser.slowMo,
@@ -78,6 +110,9 @@ export class CapCutBrowser {
         '--ignore-gpu-blocklist',
         '--use-gl=angle',
         '--enable-features=Vulkan',
+        '--mute-audio',
+        '--no-first-run',
+        '--no-default-browser-check',
       ],
     };
 
@@ -180,11 +215,19 @@ export class CapCutBrowser {
     await this.page.goto(`${config.capcut.baseUrl}/login`, { waitUntil: 'domcontentloaded' });
     await sleep(2000);
 
-    // Switch to email login (CapCut default pakai QR/social)
+    // Switch to email login (CapCut default pakai QR/social).
+    // NOTE: :has-text() is Playwright syntax, not Puppeteer — we use evaluate() instead.
     try {
-      const emailTabBtn = await this.page.$('button:has-text("email"), a:has-text("email"), [data-testid*="email" i], div:has-text("Continue with email")');
-      if (emailTabBtn) await emailTabBtn.click();
-      await sleep(1000);
+      const clicked = await this.page.evaluate(() => {
+        const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+        const target = candidates.find(el => {
+          const t = (el.innerText || el.textContent || '').toLowerCase();
+          return t.includes('email') || t.includes('continue with email');
+        });
+        if (target) { target.click(); return true; }
+        return false;
+      });
+      if (clicked) await sleep(1000);
     } catch (_) {}
 
     // Isi email + password
@@ -341,20 +384,36 @@ export class CapCutBrowser {
 
     progress(30, 'Editor ready, uploading images');
 
-    // Upload images via file input
-    let fileInput = await this.page.$(SELECTORS.fileInput);
-    if (!fileInput) {
+    // Upload images via file input — retry sampai 3x kalau input gak langsung muncul
+    // (CapCut SPA butuh waktu buat render panel upload setelah editor ready)
+    let fileInput = null;
+    for (let attempt = 1; attempt <= 3 && !fileInput; attempt++) {
+      fileInput = await this.page.$(SELECTORS.fileInput);
+      if (fileInput) break;
+
+      logger.info({ attempt }, 'file input belum muncul, coba trigger upload button...');
       try {
-        await this.page.click(SELECTORS.uploadButton);
-        await sleep(1500);
+        // Click any upload-trigger element (class-based, bukan :has-text)
+        const clicked = await this.page.evaluate(() => {
+          const btns = Array.from(document.querySelectorAll('button, [class*="upload" i], [class*="import" i]'));
+          const target = btns.find(el => {
+            const t = (el.innerText || el.textContent || '').toLowerCase();
+            const cls = (el.className || '').toString().toLowerCase();
+            return t.includes('upload') || t.includes('import') || cls.includes('upload');
+          });
+          if (target) { target.click(); return true; }
+          return false;
+        });
+        if (clicked) await sleep(1500);
         await this._closeModals();
         fileInput = await this.page.$(SELECTORS.fileInput);
       } catch (e) {
-        logger.warn({ err: e.message }, 'Cannot find upload trigger');
+        logger.warn({ err: e.message, attempt }, 'Cannot find upload trigger');
       }
+      if (!fileInput) await sleep(2000);
     }
     if (!fileInput) {
-      throw new Error('Upload file input not found in CapCut editor. Selector may need update.');
+      throw new Error('Upload file input not found in CapCut editor after 3 retries. UI CapCut mungkin berubah — jalankan scripts/inspect-editor.js untuk update selector.');
     }
 
     await fileInput.uploadFile(...imagePaths);
@@ -379,16 +438,21 @@ export class CapCutBrowser {
     await exportBtn.click();
     await sleep(2000);
 
-    // Setelah klik Export, mungkin muncul dialog export settings → klik Export/Confirm lagi
+    // Setelah klik Export, mungkin muncul dialog export settings → klik Export/Confirm lagi.
+    // NOTE: ganti :has-text() (Playwright-only) dengan evaluate + textContent filter.
     try {
-      const confirmBtn = await this.page.$('button.export-video-btn, button:has-text("Export"), button:has-text("Confirm"), button:has-text("Render")');
-      if (confirmBtn) {
-        const disabled = await confirmBtn.evaluate(el => el.classList.contains('lv-btn-disabled') || el.disabled);
-        if (!disabled) {
-          await confirmBtn.click();
-          logger.info('Clicked confirm export button');
-        }
-      }
+      const clicked = await this.page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const target = btns.find(el => {
+          const t = (el.innerText || el.textContent || '').toLowerCase().trim();
+          return t === 'export' || t === 'confirm' || t === 'render' || t === 'done';
+        });
+        if (!target) return false;
+        if (target.classList.contains('lv-btn-disabled') || target.disabled) return false;
+        target.click();
+        return true;
+      });
+      if (clicked) logger.info('Clicked confirm export button');
     } catch (_) {}
     await this._closeModals();
 

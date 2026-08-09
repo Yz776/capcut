@@ -1,0 +1,673 @@
+     1→     1→// scripts/manual-login.js
+     2→     2→// CapCut manual login — works on HEADLESS servers (no X server / no display).
+     3→     3→//
+     4→     4→// Strategi:
+     5→     5→// 1. Launch Chromium dalam headless mode (modern headless, bukan old headless).
+     6→     6→// 2. Buka https://www.capcut.com/login — CapCut akan tampilkan QR code.
+     7→     7→// 3. Screenshot QR code berkala ke tmp/qr-latest.png.
+     8→     8→// 4. Jalankan HTTP server kecil di port 3001 (CAPCUT_LOGIN_PORT) untuk serve screenshot.
+     9→     9→// 5. User buka SSH tunnel: ssh -L 3001:localhost:3001 root@<server> -p <port>
+    10→    10→//    lalu buka http://localhost:3001/ di browser lokal → scan QR pake HP.
+    11→    11→// 6. Script poll untuk detect login (cookies, URL change, avatar element).
+    12→    12→// 7. Setelah login terdeteksi → session disimpan ke .capcut-profile/ (userDataDir).
+    13→    13→//
+    14→    14→// Cara pakai di server headless:
+    15→    15→//   npm run login:manual
+    16→    16→//   # di terminal lokal (laptop): ssh -L 3001:localhost:3001 root@sakura.proxy.rlwy.net -p 39551
+    17→    17→//   # buka http://localhost:3001/ di browser lokal → scan QR pake CapCut HP
+    18→    18→//
+    19→    19→// Cara pakai di local dengan display (desktop):
+    20→    20→//   DISPLAY=:0 npm run login:manual   # otomatis pakai headless:false
+    21→    21→
+    22→    22→import puppeteer from 'puppeteer';
+    23→    23→import fs from 'node:fs';
+    24→    24→import path from 'node:path';
+    25→    25→import http from 'node:http';
+    26→    26→import { fileURLToPath } from 'node:url';
+    27→    27→import { config } from '../src/utils/config.js';
+    28→    28→import { logger } from '../src/utils/logger.js';
+    29→    29→
+    30→    30→const __dirname = path.dirname(fileURLToPath(import.meta.url));
+    31→    31→const projectRoot = config.projectRoot || path.resolve(__dirname, '..');
+    32→    32→
+    33→    33→const userDataDir = path.resolve(projectRoot, '.capcut-profile');
+    34→    34→const tmpDir = path.join(projectRoot, 'tmp');
+    35→    35→const screenshotDir = path.join(tmpDir, 'login-screenshots');
+    36→    36→const qrLatestPath = path.join(tmpDir, 'qr-latest.png');
+    37→    37→fs.mkdirSync(screenshotDir, { recursive: true });
+    38→    38→fs.rmSync(qrLatestPath, { force: true });
+    39→    39→
+    40→    40→// Clean up stale SingletonLock from previous crashed chrome instance
+    41→    41→// (Without this, chromium refuses to launch: "Failed to create SingletonLock: File exists")
+    42→    42→for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    43→    43→  const lockPath = path.join(userDataDir, lockFile);
+    44→    44→  try {
+    45→    45→    fs.rmSync(lockPath, { force: true });
+    46→    46→  } catch (_) {}
+    47→    47→}
+    48→    48→
+    49→    49→// ====== Konfigurasi ======
+    50→    50→const HTTP_PORT = parseInt(process.env.CAPCUT_LOGIN_PORT || '3001', 10);
+    51→    51→const POLL_INTERVAL_MS = 2000;
+    52→    52→const MAX_WAIT_MS = 6 * 60 * 1000; // 6 menit
+    53→    53→const hasDisplay = !!process.env.DISPLAY && process.env.DISPLAY.length > 0;
+    54→    54→
+    55→    55→logger.info({
+    56→    56→  userDataDir,
+    57→    57→  hasDisplay,
+    58→    58→  headless: !hasDisplay,
+    59→    59→  httpPort: HTTP_PORT,
+    60→    60→}, 'Manual login mode (headless Chromium + HTTP QR viewer)');
+    61→    61→
+    62→    62→// ====== HTTP server untuk serve QR screenshot ======
+    63→    63→const httpServer = http.createServer((req, res) => {
+    64→    64→  const url = req.url.split('?')[0];
+    65→    65→
+    66→    66→  if (url === '/' || url === '/index.html') {
+    67→    67→    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    68→    68→    res.end(`<!DOCTYPE html>
+    69→    69→<html lang="en"><head><meta charset="utf-8">
+    70→    70→<title>CapCut Login QR</title>
+    71→    71→<meta http-equiv="refresh" content="2">
+    72→    72→<meta name="viewport" content="width=device-width, initial-scale=1">
+    73→    73→<style>
+    74→    74→  *{box-sizing:border-box}
+    75→    75→  body{background:#0f0f10;color:#eee;font-family:system-ui,-apple-system,sans-serif;text-align:center;padding:30px 20px;margin:0;min-height:100vh}
+    76→    76→  h1{font-size:20px;margin:0 0 8px;color:#fff}
+    77→    77→  .sub{opacity:.6;font-size:13px;margin-bottom:24px}
+    78→    78→  .qr-wrap{background:#fff;padding:16px;border-radius:12px;display:inline-block;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+    79→    79→  .qr-wrap img{display:block;max-width:380px;width:100%;height:auto;image-rendering:pixelated}
+    80→    80→  .meta{margin-top:20px;font-size:12px;opacity:.5;font-family:monospace}
+    81→    81→  .status{margin-top:16px;padding:8px 16px;border-radius:8px;background:#1f1f23;display:inline-block;font-size:13px}
+    82→    82→  .ok{background:#1a3a1a;color:#7fff7f}
+    83→    83→</style></head>
+    84→    84→<body>
+    85→    85→<h1>CapCut Login QR Code</h1>
+    86→    86→<div class="sub">Auto-refresh setiap 2 detik. Scan pake aplikasi CapCut di HP.</div>
+    87→    87→<div class="qr-wrap">
+    88→    88→  <img src="/qr?t=${Date.now()}" alt="QR code screenshot" onerror="this.style.display='none'">
+    89→    89→</div>
+    90→    90→<div class="status" id="s">⏳ Waiting for QR code…</div>
+    91→    91→<div class="meta">Page auto-refresh every 2s · Port ${HTTP_PORT}</div>
+    92→    92→</body></html>`);
+    93→    93→    return;
+    94→    94→  }
+    95→    95→
+    96→    96→  if (url === '/qr') {
+    97→    97→    if (!fs.existsSync(qrLatestPath)) {
+    98→    98→      res.writeHead(404, { 'Content-Type': 'text/plain' });
+    99→    99→      res.end('QR not ready yet');
+   100→   100→      return;
+   101→   101→    }
+   102→   102→    const stat = fs.statSync(qrLatestPath);
+   103→   103→    res.writeHead(200, {
+   104→   104→      'Content-Type': 'image/png',
+   105→   105→      'Content-Length': stat.size,
+   106→   106→      'Cache-Control': 'no-store, no-cache, must-revalidate',
+   107→   107→      'Pragma': 'no-cache',
+   108→   108→      'Expires': '0',
+   109→   109→    });
+   110→   110→    fs.createReadStream(qrLatestPath).pipe(res);
+   111→   111→    return;
+   112→   112→  }
+   113→   113→
+   114→   114→  if (url === '/health') {
+   115→   115→    res.writeHead(200, { 'Content-Type': 'application/json' });
+   116→   116→    res.end(JSON.stringify({ ok: true, port: HTTP_PORT, qrReady: fs.existsSync(qrLatestPath) }));
+   117→   117→    return;
+   118→   118→  }
+   119→   119→
+   120→   120→  res.writeHead(404, { 'Content-Type': 'text/plain' });
+   121→   121→  res.end('Not found. Try / or /qr');
+   122→   122→});
+   123→   123→
+   124→   124→httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
+   125→   125→  logger.info(`HTTP QR viewer listening on http://0.0.0.0:${HTTP_PORT}/`);
+   126→   126→  logger.info('──── INSTRUKSI LOGIN ────');
+   127→   127→  logger.info(`1. Di terminal lokal (laptop), buka SSH tunnel:`);
+   128→   128→  logger.info(`     ssh -L ${HTTP_PORT}:localhost:${HTTP_PORT} root@sakura.proxy.rlwy.net -p 39551`);
+   129→   129→  logger.info(`2. Di browser lokal, buka: http://localhost:${HTTP_PORT}/`);
+   130→   130→  logger.info(`3. Scan QR code yang muncul pake aplikasi CapCut di HP`);
+   131→   131→  logger.info(`4. Script akan auto-detect login & save session`);
+   132→   132→  logger.info('─────────────────────────');
+   133→   133→});
+   134→   134→
+   135→   135→httpServer.on('error', (e) => {
+   136→   136→  logger.error({ err: e.message }, 'HTTP server error');
+   137→   137→  if (e.code === 'EADDRINUSE') {
+   138→   138→    logger.error(`Port ${HTTP_PORT} sudah dipakai. Set CAPCUT_LOGIN_PORT=3002 untuk pake port lain.`);
+   139→   139→  }
+   140→   140→  process.exit(1);
+   141→   141→});
+   142→   142→
+   143→   143→// ====== Launch browser ======
+   144→   144→const browser = await puppeteer.launch({
+   145→   145→  headless: !hasDisplay, // true kalau no DISPLAY (server), false kalau ada (desktop)
+   146→   146→  userDataDir,
+   147→   147→  defaultViewport: { width: 1440, height: 900 },
+   148→   148→  args: [
+   149→   149→    '--no-sandbox',
+   150→   150→    '--disable-setuid-sandbox',
+   151→   151→    '--disable-dev-shm-usage',
+   152→   152→    '--disable-gpu',
+   153→   153→    '--disable-software-rasterizer',
+   154→   154→    '--disable-blink-features=AutomationControlled',
+   155→   155→    '--disable-features=IsolateOrigins,site-per-process',
+   156→   156→    '--disable-infobars',
+   157→   157→    '--window-size=1440,900',
+   158→   158→    '--lang=en-US,en',
+   159→   159→    '--mute-audio',
+   160→   160→    '--no-first-run',
+   161→   161→    '--no-default-browser-check',
+   162→   162→  ],
+   163→   163→  env: {
+   164→   164→    ...process.env,
+   165→   165→    DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS || '/dev/null',
+   166→   166→  },
+   167→   167→  // ignoreDefaultArgs: ['--enable-automation'],
+   168→   168→});
+   169→   169→
+   170→   170→const pages = await browser.pages();
+   171→   171→const page = pages[0] || await browser.newPage();
+   172→   172→
+   173→   173→// Track new tabs/popups opened by CapCut (e.g. TikTok OAuth popup)
+   174→   174→let popupPage = null;
+   175→   175→browser.on('targetcreated', async (target) => {
+   176→   176→  const type = target.type();
+   177→   177→  const url = target.url();
+   178→   178→  logger.info({ type, url: url.slice(0, 100) }, 'New browser target created');
+   179→   179→  if (type === 'page' && !popupPage) {
+   180→   180→    try {
+   181→   181→      popupPage = await target.page();
+   182→   182→      if (popupPage) {
+   183→   183→        logger.info({ url }, 'Popup/new tab detected, tracking it for QR code');
+   184→   184→      }
+   185→   185→    } catch (_) {}
+   186→   186→  }
+   187→   187→});
+   188→   188→
+   189→   189→await page.setUserAgent(
+   190→   190→  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+   191→   191→);
+   192→   192→
+   193→   193→// Anti-detection: hide webdriver flag, spoof plugins/languages
+   194→   194→await page.evaluateOnNewDocument(() => {
+   195→   195→  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+   196→   196→  Object.defineProperty(navigator, 'plugins', {
+   197→   197→    get: () => [1, 2, 3, 4, 5].map(() => ({})),
+   198→   198→  });
+   199→   199→  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+   200→   200→  Object.defineProperty(navigator, 'platform', { get: () => 'Linux x86_64' });
+   201→   201→  window.chrome = window.chrome || { runtime: {} };
+   202→   202→});
+   203→   203→
+   204→   204→// ====== Buka halaman login CapCut ======
+   205→   205→logger.info('Opening CapCut login page...');
+   206→   206→
+   207→   207→const loginUrls = [
+   208→   208→  'https://www.capcut.com/login?enter_from=https%3A%2F%2Fwww.capcut.com%2Ftemplates',
+   209→   209→  'https://www.capcut.com/login',
+   210→   210→  'https://www.capcut.com/zh-tw/login',
+   211→   211→];
+   212→   212→
+   213→   213→let pageOpened = false;
+   214→   214→for (const url of loginUrls) {
+   215→   215→  try {
+   216→   216→    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+   217→   217→    await new Promise((r) => setTimeout(r, 3000));
+   218→   218→    logger.info({ url: page.url() }, 'Page loaded');
+   219→   219→    pageOpened = true;
+   220→   220→    break;
+   221→   221→  } catch (e) {
+   222→   222→    logger.warn({ url, err: e.message }, 'Failed to open login URL');
+   223→   223→  }
+   224→   224→}
+   225→   225→
+   226→   226→if (!pageOpened) {
+   227→   227→  logger.error('Tidak bisa buka halaman login CapCut. Cek koneksi internet.');
+   228→   228→  await browser.close();
+   229→   229→  httpServer.close();
+   230→   230→  process.exit(1);
+   231→   231→}
+   232→   232→
+   233→   233→// ====== Step 1: Click "Continue with CapCut Mobile" to reveal QR code ======
+   234→   234→// CapCut login page menampilkan 5 opsi login (Google, Email, TikTok, Facebook, CapCut Mobile).
+   235→   235→// QR code HANYA muncul setelah klik "Continue with CapCut Mobile".
+   236→   236→//
+   237→   237→// PENTING: Puppeteer TIDAK support :has-text() pseudo-selector (itu Playwright syntax).
+   238→   238→// Pakai page.evaluate dengan querySelectorAll + textContent filter sebagai gantinya.
+   239→   239→logger.info('Looking for "Continue with CapCut Mobile" button...');
+   240→   240→
+   241→   241→// Daftar teks yang mungkin di tombol mobile login (case-insensitive)
+   242→   242→const MOBILE_BTN_TEXTS = [
+   243→   243→  'Continue with CapCut Mobile',
+   244→   244→  'CapCut Mobile',
+   245→   245→  'Sign in with CapCut Mobile',
+   246→   246→  'Login with CapCut Mobile',
+   247→   247→  '扫码登录',           // Chinese: scan QR to login
+   248→   248→  '掃碼登入',           // Traditional Chinese
+   249→   249→  'Scan to login',
+   250→   250→  'Scan QR',
+   251→   251→  'QR Code Login',
+   252→   252→];
+   253→   253→
+   254→   254→async function findMobileLoginButton() {
+   255→   255→  // Strategy 1: find clickable element by text content
+   256→   256→  const result = await page.evaluate((texts) => {
+   257→   257→    const lowerTexts = texts.map((t) => t.toLowerCase());
+   258→   258→    const clickableSelectors = 'button, a, div[role="button"], span[role="button"], [class*="btn" i], [class*="button" i]';
+   259→   259→
+   260→   260→    const candidates = Array.from(document.querySelectorAll(clickableSelectors));
+   261→   261→    for (const el of candidates) {
+   262→   262→      // Get text from element AND its children, trimmed
+   263→   263→      const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+   264→   264→      if (!text || text.length > 100) continue; // skip huge elements / empty
+   265→   265→
+   266→   266→      const matches = lowerTexts.some((t) => text === t || text.includes(t));
+   267→   267→      if (!matches) continue;
+   268→   268→
+   269→   269→      // Skip elements with very small size (icons, hidden)
+   270→   270→      const rect = el.getBoundingClientRect();
+   271→   271→      if (rect.width < 100 || rect.height < 20) continue;
+   272→   272→      if (rect.top < 0 || rect.left < 0) continue;
+   273→   273→
+   274→   274→      // Skip if text contains "continue with google" or other non-mobile
+   275→   275→      if (text.includes('google') || text.includes('email') || text.includes('tiktok') || text.includes('facebook')) {
+   276→   276→        continue;
+   277→   277→      }
+   278→   278→
+   279→   279→      // Found it! Return selector info
+   280→   280→      el.setAttribute('data-capcut-mobile-btn', 'true');
+   281→   281→      return {
+   282→   282→        found: true,
+   283→   283→        text: text.slice(0, 80),
+   284→   284→        tag: el.tagName.toLowerCase(),
+   285→   285→        width: rect.width,
+   286→   286→        height: rect.height,
+   287→   287→        top: rect.top,
+   288→   288→        left: rect.left,
+   289→   289→      };
+   290→   290→    }
+   291→   291→    return { found: false };
+   292→   292→  }, MOBILE_BTN_TEXTS);
+   293→   293→
+   294→   294→  return result;
+   295→   295→}
+   296→   296→
+   297→   297→async function findQrCanvasOrImg() {
+   298→   298→  // Look for QR code element in modal/popup using multiple strategies
+   299→   299→  return await page.evaluate(() => {
+   300→   300→    // Strategy 1: canvas with reasonable QR dimensions (200-400px square)
+   301→   301→    const canvases = Array.from(document.querySelectorAll('canvas'));
+   302→   302→    for (const c of canvases) {
+   303→   303→      const rect = c.getBoundingClientRect();
+   304→   304→      // QR codes are usually square, 100-400px
+   305→   305→      if (Math.abs(rect.width - rect.height) < 20 && rect.width >= 100 && rect.width <= 500) {
+   306→   306→        // Skip if it's the CapCut logo or something
+   307→   307→        const parent = c.parentElement;
+   308→   308→        const parentClass = parent ? parent.className.toLowerCase() : '';
+   309→   309→        if (parentClass.includes('logo') || parentClass.includes('icon')) continue;
+   310→   310→        return {
+   311→   311→          found: true,
+   312→   312→          type: 'canvas',
+   313→   313→          width: rect.width,
+   314→   314→          height: rect.height,
+   315→   315→          top: rect.top,
+   316→   316→          left: rect.left,
+   317→   317→          parentClass: parentClass.slice(0, 80),
+   318→   318→        };
+   319→   319→      }
+   320→   320→    }
+   321→   321→
+   322→   322→    // Strategy 2: img with qr-ish src or alt
+   323→   323→    const imgs = Array.from(document.querySelectorAll('img'));
+   324→   324→    for (const i of imgs) {
+   325→   325→      const src = (i.src || '').toLowerCase();
+   326→   326→      const alt = (i.alt || '').toLowerCase();
+   327→   327→      const rect = i.getBoundingClientRect();
+   328→   328→      if (rect.width < 80) continue;
+   329→   329→      if (src.includes('qr') || alt.includes('qr') ||
+   330→   330→          (src.startsWith('data:image/png;base64,') && rect.width >= 100 && Math.abs(rect.width - rect.height) < 30)) {
+   331→   331→        return {
+   332→   332→          found: true,
+   333→   333→          type: 'img',
+   334→   334→          width: rect.width,
+   335→   335→          height: rect.height,
+   336→   336→          top: rect.top,
+   337→   337→          left: rect.left,
+   338→   338→          src: src.slice(0, 80),
+   339→   339→        };
+   340→   340→      }
+   341→   341→    }
+   342→   342→
+   343→   343→    // Strategy 3: SVG with class containing qr
+   344→   344→    const svgs = Array.from(document.querySelectorAll('svg'));
+   345→   345→    for (const s of svgs) {
+   346→   346→      const cls = (s.className?.baseVal || s.getAttribute('class') || '').toLowerCase();
+   347→   347→      const rect = s.getBoundingClientRect();
+   348→   348→      if (cls.includes('qr') && rect.width >= 100) {
+   349→   349→        return {
+   350→   350→          found: true,
+   351→   351→          type: 'svg',
+   352→   352→          width: rect.width,
+   353→   353→          height: rect.height,
+   354→   354→          top: rect.top,
+   355→   355→          left: rect.left,
+   356→   356→          cls: cls.slice(0, 80),
+   357→   357→        };
+   358→   358→      }
+   359→   359→    }
+   360→   360→
+   361→   361→    // Strategy 4: any element with qr in class name that's reasonably sized
+   362→   362→    const qrEls = Array.from(document.querySelectorAll('[class*="qr" i], [class*="qrcode" i], [class*="scan" i]'));
+   363→   363→    for (const el of qrEls) {
+   364→   364→      const rect = el.getBoundingClientRect();
+   365→   365→      const text = (el.innerText || el.textContent || '').toLowerCase();
+   366→   366→      // Skip "Continue with CapCut Mobile" button (it has qr icon class)
+   367→   367→      if (text.includes('continue with')) continue;
+   368→   368→      if (rect.width < 100 || rect.height < 100) continue;
+   369→   369→      return {
+   370→   370→        found: true,
+   371→   371→        type: 'element',
+   372→   372→        width: rect.width,
+   373→   373→        height: rect.height,
+   374→   374→        top: rect.top,
+   375→   375→        left: rect.left,
+   376→   376→        cls: (el.className || '').toString().slice(0, 80),
+   377→   377→      };
+   378→   378→    }
+   379→   379→
+   380→   380→    return { found: false };
+   381→   381→  });
+   382→   382→}
+   383→   383→
+   384→   384→let mobileBtnClicked = false;
+   385→   385→let mobileBtnInfo = null;
+   386→   386→
+   387→   387→for (let attempt = 0; attempt < 8 && !mobileBtnClicked; attempt++) {
+   388→   388→  try {
+   389→   389→    mobileBtnInfo = await findMobileLoginButton();
+   390→   390→    if (mobileBtnInfo.found) {
+   391→   391→      logger.info({ attempt, ...mobileBtnInfo }, 'Found CapCut Mobile button, clicking...');
+   392→   392→
+   393→   393→      // Compute center coordinates of the button
+   394→   394→      const centerX = mobileBtnInfo.left + mobileBtnInfo.width / 2;
+   395→   395→      const centerY = mobileBtnInfo.top + mobileBtnInfo.height / 2;
+   396→   396→
+   397→   397→      // Use page.mouse for a REAL trusted mouse click (not JS synthetic event).
+   398→   398→      // React/Vue SPA frameworks often ignore dispatchEvent() — they need real
+   399→   399→      // trusted events with proper mouse move → down → up sequence.
+   400→   400→      try {
+   401→   401→        // Move mouse to button first (some SPA frameworks need mouseover)
+   402→   402→        await page.mouse.move(centerX, centerY, { steps: 5 });
+   403→   403→        await new Promise((r) => setTimeout(r, 200));
+   404→   404→        // Real click via Puppeteer mouse (sends trusted OS-level event)
+   405→   405→        await page.mouse.click(centerX, centerY, { delay: 50 });
+   406→   406→        mobileBtnClicked = true;
+   407→   407→        logger.info({ x: centerX, y: centerY }, 'Real mouse click sent to button center');
+   408→   408→      } catch (e) {
+   409→   409→        logger.warn({ err: e.message }, 'Mouse click failed, trying element.click() fallback');
+   410→   410→        // Fallback: use elementHandle.click() (Puppeteer's native click)
+   411→   411→        try {
+   412→   412→          const handle = await page.$('[data-capcut-mobile-btn="true"]');
+   413→   413→          if (handle) {
+   414→   414→            await handle.click();
+   415→   415→            mobileBtnClicked = true;
+   416→   416→            logger.info('ElementHandle.click() fallback succeeded');
+   417→   417→          }
+   418→   418→        } catch (e2) {
+   419→   419→          logger.warn({ err: e2.message }, 'ElementHandle.click() also failed');
+   420→   420→        }
+   421→   421→      }
+   422→   422→
+   423→   423→      // Remove the data attribute for cleanliness
+   424→   424→      await page.evaluate(() => {
+   425→   425→        const btn = document.querySelector('[data-capcut-mobile-btn="true"]');
+   426→   426→        if (btn) btn.removeAttribute('data-capcut-mobile-btn');
+   427→   427→      });
+   428→   428→
+   429→   429→      if (mobileBtnClicked) break;
+   430→   430→    }
+   431→   431→  } catch (e) {
+   432→   432→    logger.warn({ err: e.message, attempt }, 'Error finding mobile button');
+   433→   433→  }
+   434→   434→  if (!mobileBtnClicked) {
+   435→   435→    if (attempt === 0) logger.warn('CapCut Mobile button not found yet, retrying...');
+   436→   436→    await new Promise((r) => setTimeout(r, 2000));
+   437→   437→  }
+   438→   438→}
+   439→   439→
+   440→   440→if (!mobileBtnClicked) {
+   441→   441→  logger.warn('Could not find "Continue with CapCut Mobile" button after 8 attempts.');
+   442→   442→  logger.info('Continuing anyway — will try to detect QR if it auto-appears...');
+   443→   443→} else {
+   444→   444→  logger.info('Waiting for QR code modal to render...');
+   445→   445→  await new Promise((r) => setTimeout(r, 3000));
+   446→   446→
+   447→   447→  // Diagnostic: check what changed after click
+   448→   448→  const diag = await page.evaluate(() => {
+   449→   449→    const allPages = window.length; // number of frames
+   450→   450→    const canvases = document.querySelectorAll('canvas').length;
+   451→   451→    const iframes = document.querySelectorAll('iframe').length;
+   452→   452→    const dialogs = document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="popup" i], [class*="dialog" i]').length;
+   453→   453→    // Check for any newly-visible overlay
+   454→   454→    const overlays = Array.from(document.querySelectorAll('div'))
+   455→   455→      .filter((d) => {
+   456→   456→        const s = getComputedStyle(d);
+   457→   457→        const rect = d.getBoundingClientRect();
+   458→   458→        return (
+   459→   459→          (s.position === 'fixed' || s.position === 'absolute') &&
+   460→   460→          rect.width > 200 &&
+   461→   461→          rect.height > 200 &&
+   462→   462→          s.zIndex !== 'auto' &&
+   463→   463→          parseInt(s.zIndex || '0', 10) > 100
+   464→   464→        );
+   465→   465→      }).length;
+   466→   466→    return { allPages, canvases, iframes, dialogs, overlays, url: location.href };
+   467→   467→  }).catch(() => ({}));
+   468→   468→  logger.info({ diag }, 'Post-click diagnostics (canvases, iframes, dialogs, overlays)');
+   469→   469→
+   470→   470→  // List all iframes with their src + position (CapCut Mobile login uses an iframe!)
+   471→   471→  const iframeInfos = await page.evaluate(() => {
+   472→   472→    return Array.from(document.querySelectorAll('iframe')).map((f) => {
+   473→   473→      const r = f.getBoundingClientRect();
+   474→   474→      return {
+   475→   475→        src: (f.src || '').slice(0, 150),
+   476→   476→        width: r.width,
+   477→   477→        height: r.height,
+   478→   478→        top: r.top,
+   479→   479→        left: r.left,
+   480→   480→        visible: r.width > 0 && r.height > 0,
+   481→   481→      };
+   482→   482→    });
+   483→   483→  }).catch(() => []);
+   484→   484→  logger.info({ iframeCount: iframeInfos.length, iframes: iframeInfos }, 'Iframes on page');
+   485→   485→
+   486→   486→  // Take a screenshot to see if click worked
+   487→   487→  const afterClickPath = path.join(screenshotDir, 'after-click.png');
+   488→   488→  await page.screenshot({ path: afterClickPath, fullPage: false }).catch(() => {});
+   489→   489→  logger.info({ path: afterClickPath }, 'Screenshot after click saved');
+   490→   490→
+   491→   491→  // List all puppeteer frames (can access same-origin iframe content)
+   492→   492→  const allFrames = page.frames();
+   493→   493→  logger.info(
+   494→   494→    {
+   495→   495→      frameCount: allFrames.length,
+   496→   496→      frames: allFrames.map((f) => ({ url: f.url().slice(0, 120) })),
+   497→   497→    },
+   498→   498→    'All frames (main + iframes)'
+   499→   499→  );
+   500→   500→
+   501→   501→  // Check all open pages/tabs (maybe QR opened in new tab)
+   502→   502→  const allPages = await browser.pages();
+   503→   503→  logger.info({ pageCount: allPages.length, urls: allPages.map((p) => p.url().slice(0, 80)) }, 'All open browser pages');
+   504→   504→
+   505→   505→  // If popup detected, wait for it to fully load and screenshot it
+   506→   506→  if (popupPage) {
+   507→   507→    logger.info({ popupUrl: popupPage.url() }, 'Popup page detected, waiting for it to load...');
+   508→   508→    try {
+   509→   509→      await popupPage.waitForLoadState?.({ waitUntil: 'load', timeout: 10000 }).catch(() => {});
+   510→   510→      await new Promise((r) => setTimeout(r, 3000));
+   511→   511→      const popupUrl = popupPage.url();
+   512→   512→      logger.info({ popupUrl }, 'Popup page URL after wait');
+   513→   513→      // Take screenshot of popup page directly
+   514→   514→      const popupShotPath = path.join(screenshotDir, 'popup-qr.png');
+   515→   515→      await popupPage.screenshot({ path: popupShotPath, fullPage: false }).catch((e) => {
+   516→   516→        logger.warn({ err: e.message }, 'Popup screenshot failed');
+   517→   517→      });
+   518→   518→      // Also save as qr-latest.png so HTTP viewer shows it
+   519→   519→      await popupPage.screenshot({ path: qrLatestPath, fullPage: false }).catch(() => {});
+   520→   520→      logger.info({ popupShotPath, qrLatestPath }, 'Popup screenshot saved!');
+   521→   521→    } catch (e) {
+   522→   522→      logger.warn({ err: e.message }, 'Error while waiting for popup');
+   523→   523→    }
+   524→   524→  }
+   525→   525→}
+   526→   526→
+   527→   527→// ====== Polling: detect login + capture QR ======
+   528→   528→const startTime = Date.now();
+   529→   529→let lastScreenshotTime = 0;
+   530→   530→let qrFound = false;
+   531→   531→let tries = 0;
+   532→   532→
+   533→   533→async function checkLogin() {
+   534→   534→  tries++;
+   535→   535→  const elapsedMs = Date.now() - startTime;
+   536→   536→
+   537→   537→  if (elapsedMs > MAX_WAIT_MS) {
+   538→   538→    logger.warn({ elapsedMs }, `Timeout ${MAX_WAIT_MS / 1000}s. No login detected.`);
+   539→   539→    return 'timeout';
+   540→   540→  }
+   541→   541→
+   542→   542→  try {
+   543→   543→    // Use popupPage if it exists (where QR code lives), otherwise main page
+   544→   544→    const activePage = popupPage && !popupPage.isClosed() ? popupPage : page;
+   545→   545→    const currentUrl = activePage.url();
+   546→   546→
+   547→   547→    // Cek 1: URL berubah dari /login atau /scan-qr-code (redirect ke home/dashboard)
+   548→   548→    const stillOnLogin = /\/login|\/scan-qr-code/i.test(currentUrl);
+   549→   549→
+   550→   550→    // Cek 2: cookies session (check both pages, cookies are shared per profile)
+   551→   551→    const cookies = await page.cookies();
+   552→   552→    const sessionCookie = cookies.find(
+   553→   553→      (c) =>
+   554→   554→        /session|token|uid|passport|login|sid|tt_csrf|s_v_web_id/i.test(c.name) && c.value && c.value.length > 10
+   555→   555→    );
+   556→   556→
+   557→   557→    // Cek 3: avatar / user element di header (check main page)
+   558→   558→    let avatarFound = false;
+   559→   559→    if (!stillOnLogin) {
+   560→   560→      try {
+   561→   561→        avatarFound = await page.$(
+   562→   562→          '[class*="avatar" i], [data-e2e*="user" i], [data-testid*="user" i], [class*="user-info" i], [class*="header-user" i], [class*="account" i]'
+   563→   563→        ) ? true : false;
+   564→   564→      } catch (_) {}
+   565→   565→    }
+   566→   566→
+   567→   567→    if (sessionCookie && (!stillOnLogin || avatarFound)) {
+   568→   568→      logger.info({ url: currentUrl, cookie: sessionCookie?.name, avatarFound }, 'LOGIN SUCCESS detected!');
+   569→   569→      return 'success';
+   570→   570→    }
+   571→   571→
+   572→   572→    // Screenshot QR code — prefer popupPage (where QR actually is)
+   573→   573→    const now = Date.now();
+   574→   574→    if (now - lastScreenshotTime > 1500) {
+   575→   575→      try {
+   576→   576→        if (popupPage && !popupPage.isClosed()) {
+   577→   577→          // Screenshot the popup page (QR code lives here!)
+   578→   578→          await popupPage.screenshot({ path: qrLatestPath, fullPage: false }).catch(() => {});
+   579→   579→          if (!qrFound) {
+   580→   580→            logger.info({ popupUrl: popupPage.url() }, 'Capturing QR from popup page');
+   581→   581→            qrFound = true;
+   582→   582→          }
+   583→   583→        } else {
+   584→   584→          // Fallback: try to find QR element on main page
+   585→   585→          const found = await findQrCanvasOrImg();
+   586→   586→          if (found && found.found) {
+   587→   587→            if (!qrFound) {
+   588→   588→              logger.info(
+   589→   589→                { type: found.type, w: Math.round(found.width), h: Math.round(found.height) },
+   590→   590→                'QR code element detected on main page, capturing...'
+   591→   591→              );
+   592→   592→              qrFound = true;
+   593→   593→            }
+   594→   594→            await page.screenshot({
+   595→   595→              path: qrLatestPath,
+   596→   596→              clip: {
+   597→   597→                x: Math.max(0, found.left - 30),
+   598→   598→                y: Math.max(0, found.top - 30),
+   599→   599→                width: found.width + 60,
+   600→   600→                height: found.height + 60,
+   601→   601→              },
+   602→   602→            });
+   603→   603→          } else {
+   604→   604→            await page.screenshot({ path: qrLatestPath, fullPage: false });
+   605→   605→          }
+   606→   606→        }
+   607→   607→        lastScreenshotTime = now;
+   608→   608→
+   609→   609→        // Save periodic debug screenshot
+   610→   610→        if (tries % 5 === 0) {
+   611→   611→          const debugPath = path.join(screenshotDir, `debug-${tries}.png`);
+   612→   612→          await activePage.screenshot({ path: debugPath, fullPage: false }).catch(() => {});
+   613→   613→        }
+   614→   614→      } catch (e) {
+   615→   615→        logger.warn({ err: e.message }, 'Screenshot error');
+   616→   616→      }
+   617→   617→    }
+   618→   618→
+   619→   619→    if (tries % 6 === 0) {
+   620→   620→      logger.info(
+   621→   621→        { tries, elapsedS: Math.round(elapsedMs / 1000), url: currentUrl, qrFound, hasSessionCookie: !!sessionCookie, mobileBtnClicked, popupAlive: popupPage && !popupPage.isClosed() },
+   622→   622→        'Waiting for login...'
+   623→   623→      );
+   624→   624→    }
+   625→   625→  } catch (e) {
+   626→   626→    logger.warn({ err: e.message }, 'Polling error');
+   627→   627→  }
+   628→   628→
+   629→   629→  return 'continue';
+   630→   630→}
+   631→   631→
+   632→   632→const pollLoop = async () => {
+   633→   633→  while (true) {
+   634→   634→    const result = await checkLogin();
+   635→   635→    if (result === 'success') {
+   636→   636→      // Beri delay sedikit untuk pastikan session tersimpan
+   637→   637→      await new Promise((r) => setTimeout(r, 2000));
+   638→   638→      try {
+   639→   639→        await browser.close();
+   640→   640→      } catch (_) {}
+   641→   641→      httpServer.close();
+   642→   642→      logger.info(`✓ Session saved to ${userDataDir}`);
+   643→   643→      logger.info('Set CAPCUT_USER_DATA_DIR=./.capcut-profile di .env untuk reuse session ini.');
+   644→   644→      process.exit(0);
+   645→   645→    }
+   646→   646→    if (result === 'timeout') {
+   647→   647→      try {
+   648→   648→        await browser.close();
+   649→   649→      } catch (_) {}
+   650→   650→      httpServer.close();
+   651→   651→      process.exit(1);
+   652→   652→    }
+   653→   653→    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+   654→   654→  }
+   655→   655→};
+   656→   656→
+   657→   657→pollLoop().catch((e) => {
+   658→   658→  logger.error({ err: e.message }, 'Fatal error in poll loop');
+   659→   659→  try { browser.close(); } catch (_) {}
+   660→   660→  httpServer.close();
+   661→   661→  process.exit(1);
+   662→   662→});
+   663→   663→
+   664→   664→// Graceful shutdown
+   665→   665→const shutdown = async (sig) => {
+   666→   666→  logger.info({ sig }, 'Received signal, closing browser...');
+   667→   667→  try { await browser.close(); } catch (_) {}
+   668→   668→  httpServer.close();
+   669→   669→  process.exit(0);
+   670→   670→};
+   671→   671→process.on('SIGINT', () => shutdown('SIGINT'));
+   672→   672→process.on('SIGTERM', () => shutdown('SIGTERM'));
+   673→   673→

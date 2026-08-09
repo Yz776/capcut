@@ -47,10 +47,48 @@ for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) 
 }
 
 // ====== Konfigurasi ======
-const HTTP_PORT = parseInt(process.env.CAPCUT_LOGIN_PORT || '3001', 10);
+// Port untuk HTTP QR viewer. Kalau 3001 sibuk, otomatis cari port kosong
+// di rentang 3002..3010 (cleared up to 9 retries). Override via env var
+// kalau mau pakai port spesifik tanpa fallback.
+const PREFERRED_PORT = parseInt(process.env.CAPCUT_LOGIN_PORT || '3001', 10);
 const POLL_INTERVAL_MS = 2000;
 const MAX_WAIT_MS = 6 * 60 * 1000; // 6 menit
 const hasDisplay = !!process.env.DISPLAY && process.env.DISPLAY.length > 0;
+
+// Helper: cek apakah port kosong
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const tester = http.createServer();
+    tester.once('error', () => resolve(false));
+    tester.once('listening', () => {
+      tester.close(() => resolve(true));
+    });
+    tester.listen(port, '0.0.0.0');
+  });
+}
+
+// Helper: cari port kosong mulai dari preferred, naik 1 per 1 sampai preferred+9
+async function findFreePort(preferred) {
+  for (let p = preferred; p <= preferred + 9; p++) {
+    if (await isPortFree(p)) return p;
+  }
+  return null; // semua sibuk
+}
+
+const HTTP_PORT = await findFreePort(PREFERRED_PORT);
+if (HTTP_PORT === null) {
+  logger.error(
+    { triedFrom: PREFERRED_PORT, triedTo: PREFERRED_PORT + 9 },
+    'Semua port 3001-3010 sibuk. Kill process lama atau set CAPCUT_LOGIN_PORT ke port lain.'
+  );
+  process.exit(1);
+}
+if (HTTP_PORT !== PREFERRED_PORT) {
+  logger.warn(
+    { preferred: PREFERRED_PORT, actual: HTTP_PORT },
+    `Port ${PREFERRED_PORT} sibuk, pakai port ${HTTP_PORT} sebagai gantinya.`
+  );
+}
 
 logger.info({
   userDataDir,
@@ -124,19 +162,19 @@ const httpServer = http.createServer((req, res) => {
 httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
   logger.info(`HTTP QR viewer listening on http://0.0.0.0:${HTTP_PORT}/`);
   logger.info('──── INSTRUKSI LOGIN ────');
-  logger.info(`1. Di terminal lokal (laptop), buka SSH tunnel:`);
-  logger.info(`     ssh -L ${HTTP_PORT}:localhost:${HTTP_PORT} root@sakura.proxy.rlwy.net -p 39551`);
+  logger.info(`1. Di terminal lokal (laptop), buka SSH tunnel ke server ini:`);
+  logger.info(`     ssh -L ${HTTP_PORT}:localhost:${HTTP_PORT} <user>@<server-host> -p <ssh-port>`);
+  logger.info(`   Ganti <user>, <server-host>, <ssh-port> sesuai server kamu.`);
   logger.info(`2. Di browser lokal, buka: http://localhost:${HTTP_PORT}/`);
-  logger.info(`3. Scan QR code yang muncul pake aplikasi CapCut di HP`);
-  logger.info(`4. Script akan auto-detect login & save session`);
+  logger.info(`3. Scan QR code yang muncul pake aplikasi CapCut di HP:`);
+  logger.info(`     Buka CapCut di HP → Profile (tab kanan) → icon Scan di kanan atas`);
+  logger.info(`4. Script akan auto-detect login & save session ke ${userDataDir}`);
   logger.info('─────────────────────────');
 });
 
 httpServer.on('error', (e) => {
+  // Should not happen since we picked a free port above, but just in case.
   logger.error({ err: e.message }, 'HTTP server error');
-  if (e.code === 'EADDRINUSE') {
-    logger.error(`Port ${HTTP_PORT} sudah dipakai. Set CAPCUT_LOGIN_PORT=3002 untuk pake port lain.`);
-  }
   process.exit(1);
 });
 
