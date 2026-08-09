@@ -82,10 +82,6 @@ if [ -n "$ID" ] && echo "$ID $ID_LIKE" | grep -qE "debian|ubuntu"; then
     2>&1 | tail -5 || true
 
   echo ""
-  echo ">> Installing ffmpeg + ffprobe (required by ffmpeg fallback composer)..."
-  $SUDO apt-get install -y --no-install-recommends ffmpeg 2>&1 | tail -5 || true
-
-  echo ""
   echo ">> (Optional) Installing xvfb untuk non-headless mode..."
   $SUDO apt-get install -y --no-install-recommends xvfb 2>&1 | tail -5 || true
 
@@ -123,23 +119,6 @@ const puppeteer = require('puppeteer');
   }
 })();
 "
-
-echo ""
-echo "=== Verifikasi ffmpeg / ffprobe ==="
-if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
-  FFMPEG_BIN="$(command -v ffmpeg)"
-  FFPROBE_BIN="$(command -v ffprobe)"
-  echo "✓ ffmpeg  : $FFMPEG_BIN"
-  echo "✓ ffprobe : $FFPROBE_BIN"
-  echo ""
-  echo "Jika Node process tidak menemukan binary ini (e.g. launch via pm2/systemd/Docker"
-  echo "yang strip PATH), tambahkan ke .env:"
-  echo "  FFMPEG_PATH=$FFMPEG_BIN"
-  echo "  FFPROBE_PATH=$FFPROBE_BIN"
-else
-  echo "✗ ffmpeg/ffprobe tidak ditemukan di PATH"
-  echo "  Install manual: sudo apt-get install -y ffmpeg"
-fi
 
 echo ""
 echo "=== DONE ==="

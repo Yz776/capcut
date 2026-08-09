@@ -1,20 +1,25 @@
 // src/services/render-worker.js
+//
+// Render pipeline (editor-only — no ffmpeg fallback):
+//   1. Resolve template info via axios (cheap, no browser).
+//   2. Launch CapCut editor in Puppeteer, login via persistent userDataDir
+//      (or email/password — but persistent session is the only reliable path).
+//   3. Open editor-template?create_id=<id>, upload user images, click Export,
+//      wait for the rendered MP4 URL, download the buffer.
+//   4. Save buffer to disk and expose a public URL via /files/videos/*.
+//
+// If login is missing/expired, the job fails fast with an actionable message
+// instructing the user to run `npm run login:manual`.
+
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
 import { logger } from '../utils/logger.js';
 import { config } from '../utils/config.js';
 import { CapCutBrowser } from './capcut-browser.js';
 import { getTemplateInfo } from './capcut-api.js';
-import { composeTemplateVideo } from './video-composer.js';
 import { saveVideo, videoPublicUrl, sanitizeFilename } from '../utils/paths.js';
 
 /**
- * Run render job end-to-end.
- * Strategy:
- *   1. Resolve template info via axios (cheap, no browser)
- *   2. Coba render via CapCut editor (full automation, needs valid editor session)
- *   3. Kalau editor auth gagal → fallback ke ffmpeg composer (overlay images to template preview)
- *   4. Save video & generate URL
+ * Run render job end-to-end (CapCut editor only).
  *
  * @param {Object} job - job object (from job-manager)
  * @param {Object} input - { template, imagePaths }
@@ -30,17 +35,21 @@ export async function runRenderJob(job, input) {
       job.updatedAt = Date.now();
     };
 
-    // Step 1: Resolve template via axios API
+    // Step 1: Resolve template via axios API (best-effort — enriches editorUrl & title)
     setProgress(2, 'Resolving template info');
     let template;
     try {
       const templateId = extractTemplateId(tplInput);
       if (templateId) {
         template = await getTemplateInfo(templateId);
-        logger.info({ jobId: job.id, templateId, title: template.title, slots: template.imageSlots },
-          'Template resolved via API');
+        logger.info(
+          { jobId: job.id, templateId, title: template.title, slots: template.imageSlots },
+          'Template resolved via API'
+        );
       } else {
-        throw new Error(`Cannot extract template ID from input: ${JSON.stringify(tplInput).slice(0, 100)}`);
+        throw new Error(
+          `Cannot extract template ID from input: ${JSON.stringify(tplInput).slice(0, 100)}`
+        );
       }
     } catch (e) {
       logger.warn({ err: e.message, jobId: job.id }, 'API template resolve failed, fallback to raw input');
@@ -49,95 +58,43 @@ export async function runRenderJob(job, input) {
         : { id: tplInput?.id, editorUrl: tplInput?.editorUrl };
     }
 
-    if (imagePaths.length < (template.imageSlots || 2)) {
-      logger.warn({ have: imagePaths.length, need: template.imageSlots || 2 },
-        'Fewer images than template slots - some slots will be reused');
+    if (!template.id && !template.editorUrl) {
+      throw new Error(
+        'Template tidak punya id atau editorUrl. Tidak bisa lanjut ke CapCut editor.'
+      );
     }
 
-    if (!template.videoUrl) {
-      throw new Error('Template tidak punya preview videoUrl. Tidak bisa render (butuh URL preview untuk ffmpeg fallback).');
-    }
+    // Step 2: Editor render (the only render path)
+    setProgress(8, 'Launching browser for CapCut editor');
+    await browser.launch();
 
-    const filename = sanitizeFilename(template.title || job.id);
+    setProgress(15, 'Logging in to CapCut');
+    await browser.login();
 
-    // Step 2: Try CapCut editor render first (only if enabled + userDataDir set)
-    let result = null;
-    let editorError = null;
-    const canTryEditor = config.browser.editorEnabled && config.browser.userDataDir;
+    setProgress(20, `Rendering via CapCut editor: "${template.title || template.id}"`);
+    const result = await browser.renderTemplate(template, imagePaths, {
+      onProgress: (pct, msg) => setProgress(pct, msg),
+    });
+    logger.info({ jobId: job.id }, 'CapCut editor render succeeded');
 
-    if (canTryEditor) {
-      try {
-        setProgress(8, 'Launching browser for CapCut editor');
-        await browser.launch();
-        setProgress(15, 'Logging in to CapCut');
-        await browser.login();
-        setProgress(20, `Rendering via CapCut editor: "${template.title || template.id}"`);
-        result = await browser.renderTemplate(template, imagePaths, {
-          onProgress: (pct, msg) => setProgress(pct, msg),
-        });
-        logger.info({ jobId: job.id }, 'CapCut editor render succeeded');
-      } catch (e) {
-        editorError = e;
-        logger.warn({ jobId: job.id, err: e.message },
-          'CapCut editor render failed — falling back to ffmpeg composer');
-      } finally {
-        await browser.close();
-      }
-    } else {
-      logger.info({ jobId: job.id, editorEnabled: config.browser.editorEnabled, hasUserDataDir: !!config.browser.userDataDir },
-        'CapCut editor disabled — using ffmpeg composer directly');
-    }
-
-    // Step 3: Fallback ke ffmpeg composer
-    if (!result) {
-      setProgress(30, 'Using ffmpeg fallback (CapCut editor unavailable)');
-      logger.info({ jobId: job.id, editorError: editorError?.message },
-        'Starting ffmpeg-based composition');
-
-      const outPath = path.join(config.storage.videoDir, `${filename}_${job.id}.mp4`);
-
-      const composeResult = await composeTemplateVideo({
-        template,
-        imagePaths,
-        outputPath: outPath,
-        onProgress: (pct, msg) => setProgress(30 + Math.floor(pct * 0.6), `[ffmpeg] ${msg}`),
-      });
-
-      const videoBuffer = await readFile(composeResult.outputPath);
-      result = {
-        videoBuffer,
-        videoUrl: null,
-        format: 'mp4',
-        source: 'ffmpeg-fallback',
-        editorError: editorError?.message,
-      };
-    }
-
-    // Step 4: Save & generate URL (skip if already on disk via ffmpeg)
+    // Step 3: Save & generate public URL
     setProgress(95, 'Saving video');
-    let localPath;
-    let publicUrl;
-
-    if (result.source === 'ffmpeg-fallback') {
-      // ffmpeg sudah tulis ke disk dengan nama yang benar
-      localPath = path.join(config.storage.videoDir, `${filename}_${job.id}.mp4`);
-      publicUrl = videoPublicUrl(`${filename}_${job.id}`, result.format);
-    } else {
-      // CapCut editor — buffer dari URL, perlu save ke disk
-      localPath = saveVideo(`${filename}_${job.id}`, result.videoBuffer, result.format);
-      publicUrl = videoPublicUrl(`${filename}_${job.id}`, result.format);
-    }
+    const filename = sanitizeFilename(template.title || job.id);
+    const localPath = saveVideo(`${filename}_${job.id}`, result.videoBuffer, result.format);
+    const publicUrl = videoPublicUrl(`${filename}_${job.id}`, result.format);
 
     job.videoPath = localPath;
     job.videoUrl = publicUrl;
-    job.renderSource = result.source || 'capcut-editor';
+    job.renderSource = 'capcut-editor';
     job.status = 'completed';
     job.progress = 100;
     job.message = 'Render completed successfully';
     job.updatedAt = Date.now();
 
-    logger.info({ jobId: job.id, publicUrl, sizeKB: Math.round(result.videoBuffer.length / 1024), source: job.renderSource },
-      'Render job completed');
+    logger.info(
+      { jobId: job.id, publicUrl, sizeKB: Math.round(result.videoBuffer.length / 1024) },
+      'Render job completed'
+    );
   } catch (err) {
     logger.error({ jobId: job.id, err: err.message, stack: err.stack }, 'Render job failed');
     job.status = 'failed';

@@ -19,9 +19,9 @@ function int(v, def) {
 }
 
 export const config = {
-  port: int(process.env.PORT, 3000),
+  port: int(process.env.PORT, 7000),
   host: process.env.HOST || '0.0.0.0',
-  publicBaseUrl: process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3000}`,
+  publicBaseUrl: process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 7000}`,
 
   browser: {
     headless: bool(process.env.HEADLESS, true),
@@ -31,9 +31,6 @@ export const config = {
     navTimeout: int(process.env.NAV_TIMEOUT, 60000),
     renderTimeout: int(process.env.RENDER_TIMEOUT, 300000),
     userDataDir: process.env.CAPCUT_USER_DATA_DIR || '',
-    // Set CAPCUT_EDITOR_ENABLED=true untuk coba render via CapCut editor (butuh session login lengkap).
-    // Default false: langsung pakai ffmpeg composer (lebih reliable tanpa full auth).
-    editorEnabled: bool(process.env.CAPCUT_EDITOR_ENABLED, false),
   },
 
   capcut: {
@@ -48,15 +45,6 @@ export const config = {
     videoDir: path.resolve(projectRoot, process.env.VIDEO_DIR || './videos'),
     tmpDir: path.resolve(projectRoot, process.env.TMP_DIR || './tmp'),
     tmpTtlMinutes: int(process.env.TMP_TTL_MINUTES, 60),
-  },
-
-  // FFmpeg / ffprobe binary resolution.
-  // Defaults to bare names ('ffmpeg' / 'ffprobe') which rely on PATH lookup.
-  // If the Node process can't find them (common with pm2/systemd/Docker/VS Code
-  // launchers that strip PATH), set FFMPEG_PATH / FFPROBE_PATH to absolute paths.
-  ffmpeg: {
-    path: process.env.FFMPEG_PATH || 'ffmpeg',
-    ffprobePath: process.env.FFPROBE_PATH || 'ffprobe',
   },
 
   jobs: {

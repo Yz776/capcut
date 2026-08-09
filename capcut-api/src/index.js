@@ -81,8 +81,11 @@ serve({
 }, (info) => {
   logger.info(`CapCut JJ API listening on http://${config.host}:${config.port}`);
   logger.info(`Public base URL: ${config.publicBaseUrl}`);
-  if (!config.capcut.email || !config.capcut.password) {
-    logger.warn('CAPCUT_EMAIL/CAPCUT_PASSWORD not set. /render and /templates will fail at login step.');
+  if (!config.browser.userDataDir) {
+    logger.warn(
+      'CAPCUT_USER_DATA_DIR not set. /render will fail at login step. ' +
+      'Run `npm run login:manual` first, then set CAPCUT_USER_DATA_DIR=./.capcut-profile in .env'
+    );
   }
   logger.info(`Headless: ${config.browser.headless}, Concurrency: ${config.jobs.maxConcurrent}`);
 });

@@ -5,7 +5,7 @@
 
 import axios from 'axios';
 
-const BASE = process.env.PUBLIC_BASE_URL || 'http://localhost:3000';
+const BASE = process.env.PUBLIC_BASE_URL || 'http://localhost:7000';
 
 async function smokeTest() {
   console.log(`\n=== Smoke Test CapCut JJ API @ ${BASE} ===\n`);
