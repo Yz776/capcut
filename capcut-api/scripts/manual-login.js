@@ -423,6 +423,26 @@ setStatus('launching-browser');
 logger.info('Launching Chromium…');
 let browser = null;
 
+// CRITICAL HELPER: page.screenshot() can hang FOREVER on some Linux servers
+// when the page has heavy canvas/animation/GPU activity (CapCut login page has
+// splash animations). When it hangs, .catch() doesn't help because the promise
+// never resolves OR rejects — it just sits there. This wraps every screenshot
+// call in a 5s timeout via Promise.race. If timeout, we log + move on so the
+// script keeps progressing (button search, polling, etc.).
+async function screenshotWithTimeout(target, opts = {}, ms = 5000) {
+  try {
+    const result = await Promise.race([
+      target.screenshot(opts),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`screenshot timeout after ${ms}ms`)), ms)),
+    ]);
+    return result;
+  } catch (e) {
+    // Don't throw — caller already wrote .catch(()=>{}) everywhere, but to be safe
+    logger.warn({ err: e.message, opts: Object.keys(opts).join(',') }, 'Screenshot failed or timed out, skipping');
+    return null;
+  }
+}
+
 mainFlow: {
 try {
   browser = await puppeteer.launch({
@@ -516,7 +536,8 @@ for (const url of loginUrls) {
     status.currentUrl = page.url();
     pageOpened = true;
     // Take immediate screenshot supaya dashboard langsung ada gambar
-    await page.screenshot({ path: mainPageShotPath, fullPage: false }).catch(() => {});
+    // CRITICAL: wrapped with 5s timeout — on some Linux servers this can hang forever
+    await screenshotWithTimeout(page, { path: mainPageShotPath, fullPage: false });
     trackScreenshot('main-page.png', 'main');
     break;
   } catch (e) {
@@ -634,7 +655,7 @@ if (!mobileBtnClicked) {
 }
 
 // Take immediate post-click screenshot
-await page.screenshot({ path: path.join(tmpDir, 'after-click.png'), fullPage: false }).catch(() => {});
+await screenshotWithTimeout(page, { path: path.join(tmpDir, 'after-click.png'), fullPage: false });
 trackScreenshot('after-click.png', 'post-click');
 
 // ====== Polling: detect login + capture QR from ALL pages/frames ======
@@ -647,20 +668,16 @@ async function captureAllScreenshots() {
   const allPages = await browser.pages().catch(() => []);
   status.pageCount = allPages.length;
 
-  // 1. Screenshot main page
-  try {
-    await page.screenshot({ path: mainPageShotPath, fullPage: false });
-    trackScreenshot('main-page.png', 'main');
-  } catch (e) { /* ignore */ }
+  // 1. Screenshot main page (5s timeout — never hang on slow servers)
+  await screenshotWithTimeout(page, { path: mainPageShotPath, fullPage: false });
+  trackScreenshot('main-page.png', 'main');
 
   // 2. Screenshot popup page if exists
   if (popupPage && !popupPage.isClosed()) {
-    try {
-      const popupShotPath = path.join(tmpDir, 'popup.png');
-      await popupPage.screenshot({ path: popupShotPath, fullPage: false });
-      trackScreenshot('popup.png', 'popup');
-      status.popupUrl = popupPage.url();
-    } catch (e) { /* ignore */ }
+    const popupShotPath = path.join(tmpDir, 'popup.png');
+    await screenshotWithTimeout(popupPage, { path: popupShotPath, fullPage: false });
+    trackScreenshot('popup.png', 'popup');
+    status.popupUrl = popupPage.url();
   }
 
   // 3. Screenshot each same-origin iframe content (kalau accessible)
@@ -675,8 +692,6 @@ async function captureAllScreenshots() {
         const frameUrl = frame.url();
         if (!frameUrl || frameUrl === 'about:blank') continue;
         const frameShotPath = path.join(tmpDir, `frame-${iframeIdx}.png`);
-        // frame.screenshot tidak tersedia langsung — pakai elementHandle dari iframe
-        // Workaround: pakai page.screenshot dengan clip dari iframe element rect
         const frameInfo = await page.evaluate((idx) => {
           const iframes = Array.from(document.querySelectorAll('iframe'));
           const f = iframes[idx - 1];
@@ -686,7 +701,7 @@ async function captureAllScreenshots() {
         }, iframeIdx).catch(() => null);
 
         if (frameInfo && frameInfo.width > 50 && frameInfo.height > 50) {
-          await page.screenshot({
+          await screenshotWithTimeout(page, {
             path: frameShotPath,
             clip: {
               x: Math.max(0, frameInfo.left),
@@ -959,21 +974,22 @@ async function checkLogin() {
         // PRIORITY 2: clip screenshot
         if (!qrSavedThisRound) {
           const targetPage = qrSource === 'popup' && popupPage && !popupPage.isClosed() ? popupPage : page;
-          try {
-            await targetPage.screenshot({
-              path: qrLatestPath,
-              clip: {
-                x: Math.max(0, qrInfo.left - 40),
-                y: Math.max(0, qrInfo.top - 40),
-                width: qrInfo.width + 80,
-                height: qrInfo.height + 80,
-              },
-            });
+          // PRIORITY 2: clip screenshot (with 5s timeout — never hang)
+          const clipBuf = await screenshotWithTimeout(targetPage, {
+            path: qrLatestPath,
+            clip: {
+              x: Math.max(0, qrInfo.left - 40),
+              y: Math.max(0, qrInfo.top - 40),
+              width: qrInfo.width + 80,
+              height: qrInfo.height + 80,
+            },
+          });
+          if (clipBuf !== null) {
             qrSavedThisRound = true;
-          } catch (_) {
+          } else {
             // fallback: full screenshot
-            await targetPage.screenshot({ path: qrLatestPath, fullPage: false }).catch(() => {});
-            qrSavedThisRound = true;
+            const fullBuf = await screenshotWithTimeout(targetPage, { path: qrLatestPath, fullPage: false });
+            if (fullBuf !== null) qrSavedThisRound = true;
           }
         }
       } else if (qrInfo?.blankCanvas) {
@@ -1001,7 +1017,7 @@ async function checkLogin() {
       // Periodic full debug screenshot
       if (tries % 5 === 0) {
         const debugPath = path.join(screenshotDir, `debug-${tries}.png`);
-        await activePage.screenshot({ path: debugPath, fullPage: false }).catch(() => {});
+        await screenshotWithTimeout(activePage, { path: debugPath, fullPage: false });
       }
     }
 

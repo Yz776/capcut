@@ -1,0 +1,138 @@
+{
+  "generatedAt": "2026-08-09T12:53:48.767Z",
+  "status": {
+    "bootTime": 1786280007674,
+    "browserLaunched": true,
+    "loginPageLoaded": true,
+    "mobileButtonFound": false,
+    "mobileButtonClicked": false,
+    "popupOpened": false,
+    "qrDetected": false,
+    "loginDetected": false,
+    "currentPhase": "loading-page",
+    "currentUrl": "https://www.capcut.com/login?enter_from=https%3A%2F%2Fwww.capcut.com%2Ftemplates",
+    "popupUrl": "",
+    "pageCount": 0,
+    "frameCount": 0,
+    "iframeCount": 0,
+    "canvasCount": 0,
+    "dialogCount": 0,
+    "cookieCount": 0,
+    "hasSessionCookie": false,
+    "lastError": "",
+    "actualHttpPort": 3002,
+    "lastButtonClick": null,
+    "recentLogs": [
+      {
+        "ts": "2026-08-09T12:53:27.681Z",
+        "level": "info",
+        "msg": "Manual login mode (headless Chromium + HTTP QR viewer)",
+        "extra": "{\"userDataDir\":\"/data/root/capcut/.capcut-profile\",\"hasDisplay\":false,\"headless\":true,\"httpPort\":3002}"
+      },
+      {
+        "ts": "2026-08-09T12:53:27.682Z",
+        "level": "info",
+        "msg": "Launching Chromium…",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:27.690Z",
+        "level": "info",
+        "msg": "HTTP dashboard listening on http://0.0.0.0:3002/",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:27.690Z",
+        "level": "info",
+        "msg": "──── INSTRUKSI LOGIN ────",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:27.690Z",
+        "level": "info",
+        "msg": "1. Di laptop, buka SSH tunnel ke server ini:",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:27.690Z",
+        "level": "info",
+        "msg": "     ssh -L 3002:localhost:3002 <user>@<server-host> -p <ssh-port>",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:27.690Z",
+        "level": "info",
+        "msg": "2. Di browser lokal, buka: http://localhost:3002/",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:27.690Z",
+        "level": "info",
+        "msg": "3. Tunggu sampai QR code muncul di dashboard. Scan pake aplikasi CapCut di HP:",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:27.690Z",
+        "level": "info",
+        "msg": "     Buka CapCut di HP → Profile (tab kanan) → icon Scan di kanan atas",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:27.690Z",
+        "level": "info",
+        "msg": "4. Script akan auto-detect login & save session ke /data/root/capcut/.capcut-profile",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:27.690Z",
+        "level": "info",
+        "msg": "─────────────────────────",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:28.338Z",
+        "level": "info",
+        "msg": "Chromium launched successfully",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:28.429Z",
+        "level": "info",
+        "msg": "Opening CapCut login page...",
+        "extra": ""
+      },
+      {
+        "ts": "2026-08-09T12:53:29.754Z",
+        "level": "info",
+        "msg": "New browser target created",
+        "extra": "{\"type\":\"service_worker\",\"url\":\"https://www.capcut.com/sw.js\"}"
+      },
+      {
+        "ts": "2026-08-09T12:53:30.144Z",
+        "level": "info",
+        "msg": "New browser target created",
+        "extra": "{\"type\":\"other\",\"url\":\"\"}"
+      },
+      {
+        "ts": "2026-08-09T12:53:30.236Z",
+        "level": "info",
+        "msg": "New browser target created",
+        "extra": "{\"type\":\"other\",\"url\":\"\"}"
+      },
+      {
+        "ts": "2026-08-09T12:53:32.669Z",
+        "level": "info",
+        "msg": "Page loaded",
+        "extra": "{\"url\":\"https://www.capcut.com/login?enter_from=https%3A%2F%2Fwww.capcut.com%2Ftemplates\"}"
+      }
+    ],
+    "screenshots": []
+  },
+  "files": {
+    "status.json": {
+      "size": 3643,
+      "contentType": "application/json",
+      "base64": "ewogICJib290VGltZSI6IDE3ODYyODAwMDc2NzQsCiAgImJyb3dzZXJMYXVuY2hlZCI6IHRydWUsCiAgImxvZ2luUGFnZUxvYWRlZCI6IHRydWUsCiAgIm1vYmlsZUJ1dHRvbkZvdW5kIjogZmFsc2UsCiAgIm1vYmlsZUJ1dHRvbkNsaWNrZWQiOiBmYWxzZSwKICAicG9wdXBPcGVuZWQiOiBmYWxzZSwKICAicXJEZXRlY3RlZCI6IGZhbHNlLAogICJsb2dpbkRldGVjdGVkIjogZmFsc2UsCiAgImN1cnJlbnRQaGFzZSI6ICJsb2FkaW5nLXBhZ2UiLAogICJjdXJyZW50VXJsIjogImh0dHBzOi8vd3d3LmNhcGN1dC5jb20vbG9naW4/ZW50ZXJfZnJvbT1odHRwcyUzQSUyRiUyRnd3dy5jYXBjdXQuY29tJTJGdGVtcGxhdGVzIiwKICAicG9wdXBVcmwiOiAiIiwKICAicGFnZUNvdW50IjogMCwKICAiZnJhbWVDb3VudCI6IDAsCiAgImlmcmFtZUNvdW50IjogMCwKICAiY2FudmFzQ291bnQiOiAwLAogICJkaWFsb2dDb3VudCI6IDAsCiAgImNvb2tpZUNvdW50IjogMCwKICAiaGFzU2Vzc2lvbkNvb2tpZSI6IGZhbHNlLAogICJsYXN0RXJyb3IiOiAiIiwKICAiYWN0dWFsSHR0cFBvcnQiOiAzMDAyLAogICJsYXN0QnV0dG9uQ2xpY2siOiBudWxsLAogICJyZWNlbnRMb2dzIjogWwogICAgewogICAgICAidHMiOiAiMjAyNi0wOC0wOVQxMjo1MzoyNy42ODFaIiwKICAgICAgImxldmVsIjogImluZm8iLAogICAgICAibXNnIjogIk1hbnVhbCBsb2dpbiBtb2RlIChoZWFkbGVzcyBDaHJvbWl1bSArIEhUVFAgUVIgdmlld2VyKSIsCiAgICAgICJleHRyYSI6ICJ7XCJ1c2VyRGF0YURpclwiOlwiL2RhdGEvcm9vdC9jYXBjdXQvLmNhcGN1dC1wcm9maWxlXCIsXCJoYXNEaXNwbGF5XCI6ZmFsc2UsXCJoZWFkbGVzc1wiOnRydWUsXCJodHRwUG9ydFwiOjMwMDJ9IgogICAgfSwKICAgIHsKICAgICAgInRzIjogIjIwMjYtMDgtMDlUMTI6NTM6MjcuNjgyWiIsCiAgICAgICJsZXZlbCI6ICJpbmZvIiwKICAgICAgIm1zZyI6ICJMYXVuY2hpbmcgQ2hyb21pdW3igKYiLAogICAgICAiZXh0cmEiOiAiIgogICAgfSwKICAgIHsKICAgICAgInRzIjogIjIwMjYtMDgtMDlUMTI6NTM6MjcuNjkwWiIsCiAgICAgICJsZXZlbCI6ICJpbmZvIiwKICAgICAgIm1zZyI6ICJIVFRQIGRhc2hib2FyZCBsaXN0ZW5pbmcgb24gaHR0cDovLzAuMC4wLjA6MzAwMi8iLAogICAgICAiZXh0cmEiOiAiIgogICAgfSwKICAgIHsKICAgICAgInRzIjogIjIwMjYtMDgtMDlUMTI6NTM6MjcuNjkwWiIsCiAgICAgICJsZXZlbCI6ICJpbmZvIiwKICAgICAgIm1zZyI6ICLilIDilIDilIDilIAgSU5TVFJVS1NJIExPR0lOIOKUgOKUgOKUgOKUgCIsCiAgICAgICJleHRyYSI6ICIiCiAgICB9LAogICAgewogICAgICAidHMiOiAiMjAyNi0wOC0wOVQxMjo1MzoyNy42OTBaIiwKICAgICAgImxldmVsIjogImluZm8iLAogICAgICAibXNnIjogIjEuIERpIGxhcHRvcCwgYnVrYSBTU0ggdHVubmVsIGtlIHNlcnZlciBpbmk6IiwKICAgICAgImV4dHJhIjogIiIKICAgIH0sCiAgICB7CiAgICAgICJ0cyI6ICIyMDI2LTA4LTA5VDEyOjUzOjI3LjY5MFoiLAogICAgICAibGV2ZWwiOiAiaW5mbyIsCiAgICAgICJtc2ciOiAiICAgICBzc2ggLUwgMzAwMjpsb2NhbGhvc3Q6MzAwMiA8dXNlcj5APHNlcnZlci1ob3N0PiAtcCA8c3NoLXBvcnQ+IiwKICAgICAgImV4dHJhIjogIiIKICAgIH0sCiAgICB7CiAgICAgICJ0cyI6ICIyMDI2LTA4LTA5VDEyOjUzOjI3LjY5MFoiLAogICAgICAibGV2ZWwiOiAiaW5mbyIsCiAgICAgICJtc2ciOiAiMi4gRGkgYnJvd3NlciBsb2thbCwgYnVrYTogaHR0cDovL2xvY2FsaG9zdDozMDAyLyIsCiAgICAgICJleHRyYSI6ICIiCiAgICB9LAogICAgewogICAgICAidHMiOiAiMjAyNi0wOC0wOVQxMjo1MzoyNy42OTBaIiwKICAgICAgImxldmVsIjogImluZm8iLAogICAgICAibXNnIjogIjMuIFR1bmdndSBzYW1wYWkgUVIgY29kZSBtdW5jdWwgZGkgZGFzaGJvYXJkLiBTY2FuIHBha2UgYXBsaWthc2kgQ2FwQ3V0IGRpIEhQOiIsCiAgICAgICJleHRyYSI6ICIiCiAgICB9LAogICAgewogICAgICAidHMiOiAiMjAyNi0wOC0wOVQxMjo1MzoyNy42OTBaIiwKICAgICAgImxldmVsIjogImluZm8iLAogICAgICAibXNnIjogIiAgICAgQnVrYSBDYXBDdXQgZGkgSFAg4oaSIFByb2ZpbGUgKHRhYiBrYW5hbikg4oaSIGljb24gU2NhbiBkaSBrYW5hbiBhdGFzIiwKICAgICAgImV4dHJhIjogIiIKICAgIH0sCiAgICB7CiAgICAgICJ0cyI6ICIyMDI2LTA4LTA5VDEyOjUzOjI3LjY5MFoiLAogICAgICAibGV2ZWwiOiAiaW5mbyIsCiAgICAgICJtc2ciOiAiNC4gU2NyaXB0IGFrYW4gYXV0by1kZXRlY3QgbG9naW4gJiBzYXZlIHNlc3Npb24ga2UgL2RhdGEvcm9vdC9jYXBjdXQvLmNhcGN1dC1wcm9maWxlIiwKICAgICAgImV4dHJhIjogIiIKICAgIH0sCiAgICB7CiAgICAgICJ0cyI6ICIyMDI2LTA4LTA5VDEyOjUzOjI3LjY5MFoiLAogICAgICAibGV2ZWwiOiAiaW5mbyIsCiAgICAgICJtc2ciOiAi4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSAIiwKICAgICAgImV4dHJhIjogIiIKICAgIH0sCiAgICB7CiAgICAgICJ0cyI6ICIyMDI2LTA4LTA5VDEyOjUzOjI4LjMzOFoiLAogICAgICAibGV2ZWwiOiAiaW5mbyIsCiAgICAgICJtc2ciOiAiQ2hyb21pdW0gbGF1bmNoZWQgc3VjY2Vzc2Z1bGx5IiwKICAgICAgImV4dHJhIjogIiIKICAgIH0sCiAgICB7CiAgICAgICJ0cyI6ICIyMDI2LTA4LTA5VDEyOjUzOjI4LjQyOVoiLAogICAgICAibGV2ZWwiOiAiaW5mbyIsCiAgICAgICJtc2ciOiAiT3BlbmluZyBDYXBDdXQgbG9naW4gcGFnZS4uLiIsCiAgICAgICJleHRyYSI6ICIiCiAgICB9LAogICAgewogICAgICAidHMiOiAiMjAyNi0wOC0wOVQxMjo1MzoyOS43NTRaIiwKICAgICAgImxldmVsIjogImluZm8iLAogICAgICAibXNnIjogIk5ldyBicm93c2VyIHRhcmdldCBjcmVhdGVkIiwKICAgICAgImV4dHJhIjogIntcInR5cGVcIjpcInNlcnZpY2Vfd29ya2VyXCIsXCJ1cmxcIjpcImh0dHBzOi8vd3d3LmNhcGN1dC5jb20vc3cuanNcIn0iCiAgICB9LAogICAgewogICAgICAidHMiOiAiMjAyNi0wOC0wOVQxMjo1MzozMC4xNDRaIiwKICAgICAgImxldmVsIjogImluZm8iLAogICAgICAibXNnIjogIk5ldyBicm93c2VyIHRhcmdldCBjcmVhdGVkIiwKICAgICAgImV4dHJhIjogIntcInR5cGVcIjpcIm90aGVyXCIsXCJ1cmxcIjpcIlwifSIKICAgIH0sCiAgICB7CiAgICAgICJ0cyI6ICIyMDI2LTA4LTA5VDEyOjUzOjMwLjIzNloiLAogICAgICAibGV2ZWwiOiAiaW5mbyIsCiAgICAgICJtc2ciOiAiTmV3IGJyb3dzZXIgdGFyZ2V0IGNyZWF0ZWQiLAogICAgICAiZXh0cmEiOiAie1widHlwZVwiOlwib3RoZXJcIixcInVybFwiOlwiXCJ9IgogICAgfSwKICAgIHsKICAgICAgInRzIjogIjIwMjYtMDgtMDlUMTI6NTM6MzIuNjY5WiIsCiAgICAgICJsZXZlbCI6ICJpbmZvIiwKICAgICAgIm1zZyI6ICJQYWdlIGxvYWRlZCIsCiAgICAgICJleHRyYSI6ICJ7XCJ1cmxcIjpcImh0dHBzOi8vd3d3LmNhcGN1dC5jb20vbG9naW4/ZW50ZXJfZnJvbT1odHRwcyUzQSUyRiUyRnd3dy5jYXBjdXQuY29tJTJGdGVtcGxhdGVzXCJ9IgogICAgfQogIF0sCiAgInNjcmVlbnNob3RzIjogW10KfQ=="
+    }
+  }
+}
