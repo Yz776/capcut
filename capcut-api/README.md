@@ -51,11 +51,69 @@ PUBLIC_BASE_URL=http://localhost:3000
 
 Email/password login rawan captcha. Lebih stabil: login 1x manual, simpan session:
 
+#### A. Di local/desktop (punya display)
+
 ```bash
 npm run login:manual
 ```
 
 Browser non-headless akan terbuka. Login CapCut via QR atau email. Setelah terdeteksi login, session tersimpan ke `./.capcut-profile`. Lalu update `.env`:
+
+#### B. Di server headless (VPS/Railway/Docker tanpa X server)
+
+Script `manual-login.js` otomatis pakai mode headless kalau env `DISPLAY` kosong, dan menjalankan HTTP server kecil di port 3001 untuk serve screenshot QR code.
+
+**Langkah 1 — Install system deps (sekali saja):**
+
+```bash
+bash scripts/install-deps.sh
+# atau
+npm run deps:install
+```
+
+**Langkah 2 — Buka SSH tunnel di laptop lokal kamu:**
+
+```bash
+# Di terminal lokal (bukan server), buka tunnel port 3001
+ssh -L 3001:localhost:3001 root@sakura.proxy.rlwy.net -p 39551
+# Masukkan password server (Wifi.id123)
+# Biarkan terminal ini terbuka
+```
+
+**Langkah 3 — Jalankan login di server:**
+
+```bash
+# Di terminal server
+npm run login:manual
+```
+
+Output log akan menampilkan:
+```
+HTTP QR viewer listening on http://0.0.0.0:3001/
+1. Di terminal lokal (laptop), buka SSH tunnel:
+     ssh -L 3001:localhost:3001 root@sakura.proxy.rlwy.net -p 39551
+2. Di browser lokal, buka: http://localhost:3001/
+3. Scan QR code yang muncul pake aplikasi CapCut di HP
+4. Script akan auto-detect login & save session
+```
+
+**Langkah 4 — Buka http://localhost:3001/ di browser lokal, scan QR:**
+
+Page akan auto-refresh setiap 2 detik. Buka aplikasi CapCut di HP → menu Profile → icon Scan di kanan atas → arahkan ke QR code di browser.
+
+**Langkah 5 — Tunggu script detect login:**
+
+Setelah QR di-scan dan dikonfirmasi di HP, script otomatis detect login (via cookies, URL change, atau avatar element), save session ke `.capcut-profile/`, dan exit.
+
+**Troubleshooting server headless:**
+
+- **Error `Missing X server or $DISPLAY`** → pastikan pakai versi script terbaru (sudah auto-detect DISPLAY)
+- **Error `Failed to connect to bus /run/dbus/system_bus_socket`** → install dbus: `apt-get install -y dbus`
+- **Port 3001 sudah dipakai** → set `CAPCUT_LOGIN_PORT=3002` sebelum `npm run login:manual`
+- **Chromium launch gagal (missing libs)** → run `bash scripts/install-deps.sh` lagi
+- **QR tidak muncul di page** → script otomatis capture full page screenshot sebagai fallback; cek `/qr` endpoint
+
+Lalu update `.env`:
 
 ```dotenv
 CAPCUT_USER_DATA_DIR=./.capcut-profile

@@ -20,31 +20,60 @@ Task: User koreksi: maksudnya "git push" bukan "git clone" — local harus dipus
 Work Log:
 - Identifikasi branch utama GitHub: main (commit 9b713c2 Next.js app)
 - Stop Next.js dev server (kill next-server process)
-- Clear semua file Next.js di /home/z/my-project/capcut-api/ (src, public, prisma, components.json, next.config.ts, tsconfig.json, tailwind.config.ts, dll)
-- Restore file Hono API lama dari /home/z/my-project/capcut-api-backup/:
-  * .env, .env.example, README.md (dari README-hono.md), package.json (dari package-hono.json)
-  * src/ (dari src-hono/) — index.js, routes/, services/, utils/
-  * scripts/ (dari scripts-hono/) — 18 file test/inspect/login scripts
+- Clear semua file Next.js di /home/z/my-project/capcut-api/
+- Restore file Hono API lama dari /home/z/my-project/capcut-api-backup/
 - Buat .gitignore baru yang exclude .env, .capcut-profile/, node_modules/, downloads/, videos/, tmp/, logs/
 - git init -b main di /home/z/my-project/capcut-api
 - git remote add origin https://<PAT>@github.com/Yz776/capcut.git
-- git config user.email/name lokal (capcut-jj-dev)
 - git add -A → 34 file staged (file sensitif di-exclude dengan benar)
 - git commit dengan pesan feat: replace Next.js app with pure Node.js CapCut JJ API (commit f3cbc05)
 - git push -f origin main → sukses force push, GitHub commit 9b713c2 → f3cbc05
-- Verifikasi via GitHub API:
-  * Root: .env.example, .gitignore, README.md, package.json, scripts/, src/ ✓
-  * src/: index.js, routes/, services/, utils/ ✓
-  * scripts/: 18 file JS/sh ✓
-  * next.config.ts: Not Found ✓
-  * prisma/: Not Found ✓
-  * src/components/: Not Found ✓
-- Cleanup /tmp/capcut-github
+- Verifikasi via GitHub API: file Next.js lenyap, file Hono API muncul
+
+---
+Task ID: headless-login-fix-3
+Agent: main (Super Z)
+Task: Fix npm run login:manual di server production (sakura.proxy.rlwy.net:39551) yang gagal dengan "Missing X server or $DISPLAY" dan "Failed to connect to bus"
+
+Work Log:
+- Analisis error:
+  * "Missing X server or $DISPLAY" — script pakai headless:false, butuh X server
+  * "Failed to connect to bus /run/dbus/system_bus_socket" — dbus tidak terinstall
+  * User berikan akses SSH ke production server untuk testing
+- Rewrite scripts/manual-login.js:
+  * Auto-detect DISPLAY env var → headless=true kalau kosong, headless=false kalau ada
+  * Tambah HTTP server kecil di port 3001 (CAPCUT_LOGIN_PORT env) untuk serve QR screenshot
+  * Tambah anti-detection (override navigator.webdriver, plugins, languages, platform)
+  * Login detection multi-factor: cookies + URL change + avatar element
+  * Fallback: full page screenshot kalau QR element tidak kedetect
+  * Coba multiple login URLs: /login?enter_from=, /login, /zh-tw/login
+  * Chrome flags komprehensif untuk container/VPS: --no-sandbox, --disable-gpu, --disable-software-rasterizer, --disable-dev-shm-usage, --disable-blink-features=AutomationControlled, dll
+  * Set DBUS_SESSION_BUS_ADDRESS=/dev/null untuk silence warning dbus
+  * Graceful shutdown SIGINT/SIGTERM
+  * Print instruksi SSH tunnel ke user
+- Buat scripts/install-deps.sh:
+  * Auto-detect distro via /etc/os-release
+  * Install semua Chromium shared libs (libnss3, libnspr4, libatk1.0-0, libatk-bridge2.0-0, libcups2, libdrm2, libgbm1, libpango-1.0-0, libcairo2, libasound2, libxcomposite1, libxdamage1, libxfixes3, libxrandr2, libgtk-3-0, dll)
+  * Install dbus (fix 'Failed to connect to bus' error)
+  * Install fonts-noto-cjk + fonts-noto-color-emoji (untuk render Chinese di CapCut login page)
+  * Install xvfb (optional untuk non-headless fallback)
+  * Verifikasi launch Chromium dengan test script
+- Update package.json:
+  * Tambah script 'login:manual:xvfb' (xvfb-run wrapper)
+  * Tambah script 'deps:install' (run install-deps.sh)
+- Update README.md dengan section "B. Di server headless (VPS/Railway/Docker tanpa X server)":
+  * Step-by-step SSH tunnel instructions (ssh -L 3001:localhost:3001 root@host -p port)
+  * Troubleshooting untuk error umum
+  * Workflow lengkap untuk server headless
+- Commit & push (commit 8616a4a di atas f3cbc05)
+- Verifikasi via GitHub API: 26 file berubah, scripts/install-deps.sh added
 
 Stage Summary:
-- Repo GitHub Yz776/capcut sekarang berisi pure Node.js Hono API (bukan Next.js lagi)
-- 34 file ter-commit di branch main, commit hash f3cbc05
-- File sensitif (.env, .capcut-profile/) tidak ikut ter-push
-- File lokal tetap utuh di /home/z/my-project/capcut-api/ dengan git history baru
-- Backup Hono lama masih tersedia di /home/z/my-project/capcut-api-backup/ jika perlu
-- Local capcut-api sekarang adalah git repo dengan remote origin = GitHub Yz776/capcut
+- Repo GitHub Yz776/capcut sekarang di commit 8616a4a
+- Script login:manual sekarang support server headless (no X server required)
+- HTTP QR viewer di port 3001 untuk akses QR screenshot via SSH tunnel
+- Install-deps.sh otomatis install semua Chromium system dependencies di Ubuntu/Debian
+- User perlu pull di production server: git pull origin main
+- Lalu: bash scripts/install-deps.sh → npm install → npm run login:manual
+- SSH tunnel di laptop: ssh -L 3001:localhost:3001 root@sakura.proxy.rlwy.net -p 39551
+- Browser lokal: http://localhost:3001/ → scan QR pake CapCut HP

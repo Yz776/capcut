@@ -8,7 +8,9 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "test:smoke": "node scripts/smoke-test.js",
-    "login:manual": "node scripts/manual-login.js"
+    "login:manual": "node scripts/manual-login.js",
+    "login:manual:xvfb": "xvfb-run --auto-servernum --server-args='-screen 0 1440x900x24' node scripts/manual-login.js",
+    "deps:install": "bash scripts/install-deps.sh"
   },
   "engines": {
     "node": ">=18.0.0"
