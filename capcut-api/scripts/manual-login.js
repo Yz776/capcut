@@ -215,8 +215,48 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
+  if (url === '/debug-bundle') {
+    // Returns a JSON file with all debug info base64-encoded — user can download
+    // and send to developer for diagnosis. No zip dep needed.
+    persistStatus();
+    const bundle = {
+      generatedAt: new Date().toISOString(),
+      status,
+      files: {},
+    };
+    // Include all tracked screenshots + qr-latest + main-page + status json
+    const filesToBundle = [
+      { name: 'qr-latest.png', path: qrLatestPath },
+      { name: 'main-page.png', path: mainPageShotPath },
+      { name: 'status.json', path: statusJsonPath },
+    ];
+    for (const s of status.screenshots) {
+      filesToBundle.push({ name: s.name, path: s.path });
+    }
+    for (const f of filesToBundle) {
+      try {
+        if (fs.existsSync(f.path)) {
+          const buf = fs.readFileSync(f.path);
+          bundle.files[f.name] = {
+            size: buf.length,
+            contentType: f.name.endsWith('.json') ? 'application/json' : 'image/png',
+            base64: buf.toString('base64'),
+          };
+        }
+      } catch (_) {}
+    }
+    const json = JSON.stringify(bundle, null, 2);
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Content-Disposition': `attachment; filename="capcut-login-debug-${Date.now()}.json"`,
+      ...noCacheHeaders,
+    });
+    res.end(json);
+    return;
+  }
+
   res.writeHead(404, { 'Content-Type': 'text/plain' });
-  res.end('Not found. Try / or /qr or /status');
+  res.end('Not found. Try / or /qr or /status or /debug-bundle');
 });
 
 httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
@@ -294,9 +334,9 @@ function dashboardHtml() {
 </style></head>
 <body><div class="wrap">
 <h1>CapCut Login Dashboard</h1>
-<div class="sub">Auto-refresh every 3s · Port ${HTTP_PORT} · Uptime ${uptimeS}s</div>
+<div class="sub">Auto-refresh every 3s · Port ${HTTP_PORT} · Uptime ${uptimeS}s · <a href="/debug-bundle" style="color:#93c5fd" target="_blank">Download Debug Bundle (.json)</a></div>
 
-<div class="phase ${status.currentPhase}">${phaseLabel}</div>
+<div class="phase ${status.currentPhase}">${phaseLabel}${status.lastError ? `<br><span style="font-size:12px;color:#fca5a5">Error: ${escapeHtml(status.lastError)}</span>` : ''}</div>
 
 <div class="grid">
   <div class="card">
@@ -679,9 +719,47 @@ async function captureAllScreenshots() {
   } catch (_) {}
 }
 
+// Find QR code element AND extract its pixels via canvas.toDataURL() or img.src.
+// CRITICAL: validates that canvas has non-uniform pixel content (i.e. the QR
+// has actually been drawn, not just the empty canvas element).
 async function findQrCanvasOrImg(targetPage) {
   return await targetPage.evaluate(() => {
-    // Strategy 1: canvas with reasonable QR dimensions
+    function isCanvasNonUniform(canvas) {
+      // Returns true if canvas has actual varying pixel content (not blank).
+      // CapCut's QR canvas is sometimes created empty and drawn into ~200-500ms later.
+      try {
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return false;
+        const w = canvas.width;
+        const h = canvas.height;
+        if (w < 50 || h < 50) return false;
+        const data = ctx.getImageData(0, 0, w, h).data;
+        if (!data || data.length < 16) return false;
+        // Sample at most 400 pixels (every Nth pixel) for speed
+        const stride = Math.max(4, Math.floor(data.length / 4 / 400)) * 4;
+        let blackCount = 0, whiteCount = 0, sampleCount = 0;
+        for (let i = 0; i < data.length; i += stride) {
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          const lum = (r + g + b) / 3;
+          if (lum < 80) blackCount++;
+          else if (lum > 180) whiteCount++;
+          sampleCount++;
+        }
+        if (sampleCount === 0) return false;
+        // Real QR: at least 10% black AND 10% white. Blank canvas would be ~100% one color.
+        const blackRatio = blackCount / sampleCount;
+        const whiteRatio = whiteCount / sampleCount;
+        return blackRatio > 0.1 && whiteRatio > 0.1;
+      } catch (_) {
+        return false; // canvas not readable (CORS, tainted) — treat as no QR
+      }
+    }
+
+    function extractCanvasDataUrl(canvas) {
+      try { return canvas.toDataURL('image/png'); } catch (_) { return null; }
+    }
+
+    // Strategy 1: canvas with reasonable QR dimensions + non-uniform content
     const canvases = Array.from(document.querySelectorAll('canvas'));
     for (const c of canvases) {
       const rect = c.getBoundingClientRect();
@@ -689,29 +767,58 @@ async function findQrCanvasOrImg(targetPage) {
         const parent = c.parentElement;
         const parentClass = parent ? parent.className.toLowerCase() : '';
         if (parentClass.includes('logo') || parentClass.includes('icon')) continue;
-        return { found: true, type: 'canvas', width: rect.width, height: rect.height, top: rect.top, left: rect.left };
+
+        // VALIDATE: canvas must have actual QR pixels drawn, not be blank
+        if (!isCanvasNonUniform(c)) {
+          // Canvas exists but blank — QR not yet rendered. Keep looking/waiting.
+          return { found: false, blankCanvas: true, w: rect.width, h: rect.height };
+        }
+
+        const dataUrl = extractCanvasDataUrl(c);
+        return {
+          found: true,
+          type: 'canvas',
+          width: rect.width,
+          height: rect.height,
+          top: rect.top,
+          left: rect.left,
+          dataUrl,
+        };
       }
     }
-    // Strategy 2: img with qr-ish src/alt
+
+    // Strategy 2: img with qr-ish src/alt OR img with data:image/png src (QR as base64)
     const imgs = Array.from(document.querySelectorAll('img'));
     for (const i of imgs) {
-      const src = (i.src || '').toLowerCase();
+      const src = (i.src || '');
       const alt = (i.alt || '').toLowerCase();
       const rect = i.getBoundingClientRect();
       if (rect.width < 80) continue;
-      if (src.includes('qr') || alt.includes('qr') || (src.startsWith('data:image/png;base64,') && rect.width >= 100 && Math.abs(rect.width - rect.height) < 30)) {
-        return { found: true, type: 'img', width: rect.width, height: rect.height, top: rect.top, left: rect.left };
+      const srcLow = src.toLowerCase();
+      if (srcLow.includes('qr') || alt.includes('qr') ||
+          (src.startsWith('data:image/png;base64,') && rect.width >= 100 && Math.abs(rect.width - rect.height) < 30)) {
+        return {
+          found: true,
+          type: 'img',
+          width: rect.width,
+          height: rect.height,
+          top: rect.top,
+          left: rect.left,
+          dataUrl: src.startsWith('data:') ? src : null,
+        };
       }
     }
+
     // Strategy 3: svg with class containing qr
     const svgs = Array.from(document.querySelectorAll('svg'));
     for (const s of svgs) {
       const cls = (s.className?.baseVal || s.getAttribute('class') || '').toLowerCase();
       const rect = s.getBoundingClientRect();
       if (cls.includes('qr') && rect.width >= 100) {
-        return { found: true, type: 'svg', width: rect.width, height: rect.height, top: rect.top, left: rect.left };
+        return { found: true, type: 'svg', width: rect.width, height: rect.height, top: rect.top, left: rect.left, dataUrl: null };
       }
     }
+
     // Strategy 4: any element with qr in class name
     const qrEls = Array.from(document.querySelectorAll('[class*="qr" i], [class*="qrcode" i], [class*="scan" i]'));
     for (const el of qrEls) {
@@ -719,8 +826,9 @@ async function findQrCanvasOrImg(targetPage) {
       const text = (el.innerText || el.textContent || '').toLowerCase();
       if (text.includes('continue with')) continue;
       if (rect.width < 100 || rect.height < 100) continue;
-      return { found: true, type: 'element', width: rect.width, height: rect.height, top: rect.top, left: rect.left };
+      return { found: true, type: 'element', width: rect.width, height: rect.height, top: rect.top, left: rect.left, dataUrl: null };
     }
+
     return { found: false };
   }).catch(() => ({ found: false }));
 }
@@ -822,31 +930,64 @@ async function checkLogin() {
         qrFound = true;
         status.qrDetected = true;
         setStatus('waiting-login');
-        logger.info({ type: qrInfo.type, source: qrSource, w: Math.round(qrInfo.width), h: Math.round(qrInfo.height) }, 'QR code element detected!');
+        logger.info({ type: qrInfo.type, source: qrSource, w: Math.round(qrInfo.width), h: Math.round(qrInfo.height), hasDataUrl: !!qrInfo.dataUrl }, 'QR code element detected!');
       } else if (qrFound && status.currentPhase === 'waiting-qr') {
         setStatus('waiting-login');
       }
 
       // Save best screenshot as qr-latest.png
-      // Heuristic 1: if we found a QR element with specific coords, clip-capture it
+      // PRIORITY 1: if QR element has dataUrl (canvas.toDataURL or img src), write that directly.
+      //   This gets EXACT pixels — no clipping artifacts, no timing issues.
+      // PRIORITY 2: if no dataUrl, clip-screenshot the QR element region.
+      // PRIORITY 3: fallback to best screenshot from gallery.
+      let qrSavedThisRound = false;
       if (qrInfo?.found) {
-        const targetPage = qrSource === 'popup' && popupPage && !popupPage.isClosed() ? popupPage : page;
-        try {
-          await targetPage.screenshot({
-            path: qrLatestPath,
-            clip: {
-              x: Math.max(0, qrInfo.left - 40),
-              y: Math.max(0, qrInfo.top - 40),
-              width: qrInfo.width + 80,
-              height: qrInfo.height + 80,
-            },
-          });
-        } catch (_) {
-          // fallback: full screenshot
-          await targetPage.screenshot({ path: qrLatestPath, fullPage: false }).catch(() => {});
+        // PRIORITY 1: dataUrl
+        if (qrInfo.dataUrl && qrInfo.dataUrl.startsWith('data:image/png;base64,')) {
+          try {
+            const buf = Buffer.from(qrInfo.dataUrl.split(',')[1], 'base64');
+            fs.writeFileSync(qrLatestPath, buf);
+            qrSavedThisRound = true;
+            if (tries % 8 === 0) {
+              logger.info({ size: buf.length, source: qrSource }, 'QR pixels saved via canvas.toDataURL()');
+            }
+          } catch (e) {
+            logger.warn({ err: e.message }, 'Failed to write QR from dataUrl, falling back to screenshot');
+          }
         }
-      } else {
-        // Heuristic 2: pick best screenshot from gallery (prefer popup > main)
+
+        // PRIORITY 2: clip screenshot
+        if (!qrSavedThisRound) {
+          const targetPage = qrSource === 'popup' && popupPage && !popupPage.isClosed() ? popupPage : page;
+          try {
+            await targetPage.screenshot({
+              path: qrLatestPath,
+              clip: {
+                x: Math.max(0, qrInfo.left - 40),
+                y: Math.max(0, qrInfo.top - 40),
+                width: qrInfo.width + 80,
+                height: qrInfo.height + 80,
+              },
+            });
+            qrSavedThisRound = true;
+          } catch (_) {
+            // fallback: full screenshot
+            await targetPage.screenshot({ path: qrLatestPath, fullPage: false }).catch(() => {});
+            qrSavedThisRound = true;
+          }
+        }
+      } else if (qrInfo?.blankCanvas) {
+        // Canvas exists but blank — QR not yet rendered. Don't overwrite qr-latest.png
+        // with a blank canvas. Keep previous content (or fall back to popup screenshot).
+        if (!fs.existsSync(qrLatestPath) || fs.statSync(qrLatestPath).size < 1500) {
+          // No QR saved yet, fall through to popup screenshot
+        } else {
+          qrSavedThisRound = true; // keep existing QR
+        }
+      }
+
+      if (!qrSavedThisRound) {
+        // PRIORITY 3: pick best screenshot from gallery (prefer popup > main)
         const best = pickBestQrScreenshot();
         if (best && best.path !== qrLatestPath) {
           try {
