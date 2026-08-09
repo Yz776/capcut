@@ -1,9 +1,102 @@
-node_modules/
-.env
-.capcut-profile/
-videos/*
-downloads/*
-tmp/*
-logs/*
-*.log
+# === Dependencies ===
+node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# === Testing ===
+/coverage
+
+# === Next.js ===
+/.next/
+/out/
+/build
+
+# === Misc ===
 .DS_Store
+*.pem
+
+# === Debug logs ===
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.log
+dev.log
+dev.out.log
+server.log
+
+# === Env files ===
+.env*
+
+# === Vercel ===
+.vercel
+
+# === TypeScript ===
+*.tsbuildinfo
+next-env.d.ts
+
+# === Editor ===
+local-*
+.claude
+.z-ai-config
+.vscode/
+.idea/
+
+# === Project-specific: exclude everything NOT part of the CapCut web app ===
+
+# Generation/test scripts (kept locally, not part of web app)
+/scripts/
+.zscripts/
+tests/
+
+# Tool/debug artifacts
+tool-results/
+batch_results_*.json
+deep_test_results.json
+retest_results.json
+retest2_results.json
+endpoints.json
+endpoints.txt
+swagger-final.json
+swagger-prod.json
+test-all-results.json
+test-final.json
+test-results-v2.json
+test-results.json
+test-retest-results.json
+test_log.txt
+test_results.jsonl
+mini-services/
+
+# Download dir (only README allowed)
+/download/*
+!/download/README.md
+
+# Upload dir (user FF screenshots, not for repo)
+/upload/
+
+# Unrelated snippet libraries
+haidar-snippets/
+apis/
+examples/
+
+# Database
+db/
+*.db
+*.sqlite
+
+# Server config
+Caddyfile
+
+# Skills (internal)
+/skills/
+
+# Internal docs
+prompt
+test
+worklog.md
