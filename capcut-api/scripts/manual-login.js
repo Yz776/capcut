@@ -1,1081 +1,909 @@
 // scripts/manual-login.js
-// CapCut manual login — works on HEADLESS servers (no X server / no display).
+// CapCut manual login via COOKIE PASTE — no QR extraction, no VNC, no headless login.
 //
-// Strategi (v2 — robust, self-diagnosing):
-// 1. Launch Chromium dalam headless mode (modern headless, bukan old headless).
-// 2. Buka https://www.capcut.com/login
-// 3. JALANKAN HTTP server DI SINI, SEBELUM browser launch — supaya user ALWAYS
-//    bisa akses / dashboard bahkan kalau browser gagal launch.
-// 4. Screenshot SEMUA page + SEMUA frame setiap 1.5s, simpan yang "paling QR-like"
-//    ke tmp/qr-latest.png. Juga simpan screenshot per-page untuk debug.
-// 5. Dashboard di / menampilkan: status lengkap, screenshot utama, screenshot
-//    semua popup, log terbaru, hint apa yg sedang dilakukan script.
-// 6. Poll untuk detect login (cookies, URL change, avatar element).
-// 7. Setelah login terdeteksi → session disimpan ke .capcut-profile/.
+// Flow:
+// 1. HTTP dashboard on port 3002 (auto-fallback to 3003..3010 if busy)
+// 2. User opens https://www.capcut.com/login in their OWN browser, logs in
+//    (QR, email, Google, whatever — doesn't matter)
+// 3. User exports cookies (via Cookie-Editor extension OR DevTools Application tab
+//    OR `copy(document.cookie)` console snippet)
+// 4. User pastes cookies into our dashboard textarea
+// 5. We POST to /api/save-cookies → launch headless puppeteer with .capcut-profile,
+//    setCookie(), navigate to https://www.capcut.com/my-cloud/material, check login state
+// 6. If logged in → cookies persist in .capcut-profile automatically + saved to cookies.json
+// 7. Dashboard shows success, ready to start API server
 //
-// Cara pakai di server headless:
-//   npm run login:manual
-//   # SSH tunnel dari laptop: ssh -L 3001:localhost:3001 root@<server> -p <port>
-//   # buka http://localhost:3001/ di browser lokal → scan QR pake CapCut HP
+// Usage:
+//   node scripts/manual-login.js
+//   # SSH tunnel: ssh -L 3002:localhost:3002 root@<server>
+//   # Open http://127.0.0.1:3002/ in local browser
 //
-// Port fallback otomatis: kalau 3001 sibuk, coba 3002..3010.
+// Environment:
+//   CAPCUT_LOGIN_PORT=3002   (override default port)
 
-import puppeteer from 'puppeteer';
+import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import http from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { config } from '../src/utils/config.js';
-import { logger } from '../src/utils/logger.js';
+import { spawn } from 'node:child_process';
+
+// Catch-all process error handlers — keep server alive even if validation crashes
+process.on('uncaughtException', (e) => {
+  console.error('[FATAL uncaughtException]', e.message);
+  console.error(e.stack);
+  state.phase = 'error';
+  state.lastError = `Uncaught: ${e.message}`;
+  state.message = `Uncaught exception: ${e.message}`;
+});
+process.on('unhandledRejection', (e) => {
+  console.error('[FATAL unhandledRejection]', e?.message || e);
+  console.error(e?.stack);
+  state.phase = 'error';
+  state.lastError = `Unhandled: ${e?.message || String(e)}`;
+  state.message = `Unhandled rejection: ${e?.message || String(e)}`;
+});
+process.on('exit', (code) => {
+  console.log(`[process] exit code=${code}`);
+});
+process.on('SIGTERM', () => console.log('[process] SIGTERM'));
+process.on('SIGINT', () => { console.log('[process] SIGINT'); process.exit(0); });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = config.projectRoot || path.resolve(__dirname, '..');
+const projectRoot = path.resolve(__dirname, '..');
 
 const userDataDir = path.resolve(projectRoot, '.capcut-profile');
-const tmpDir = path.join(projectRoot, 'tmp');
-const screenshotDir = path.join(tmpDir, 'login-screenshots');
-const qrLatestPath = path.join(tmpDir, 'qr-latest.png');
-const mainPageShotPath = path.join(tmpDir, 'main-page.png');
-const statusJsonPath = path.join(tmpDir, 'login-status.json');
-fs.mkdirSync(screenshotDir, { recursive: true });
+const tmpDir = path.resolve(projectRoot, 'tmp');
+const cookiesJsonPath = path.resolve(projectRoot, 'cookies.json');
+const validationShotPath = path.join(tmpDir, 'login-validation.png');
 fs.mkdirSync(tmpDir, { recursive: true });
-fs.rmSync(qrLatestPath, { force: true });
 
 // Clean up stale SingletonLock from previous crashed chrome instance
 for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
-  const lockPath = path.join(userDataDir, lockFile);
-  try { fs.rmSync(lockPath, { force: true }); } catch (_) {}
+  try { fs.rmSync(path.join(userDataDir, lockFile), { force: true }); } catch (_) {}
 }
 
-// ====== Konfigurasi ======
-const PREFERRED_PORT = parseInt(process.env.CAPCUT_LOGIN_PORT || '3001', 10);
-const POLL_INTERVAL_MS = 1500;
-const MAX_WAIT_MS = 10 * 60 * 1000; // 10 menit
-const hasDisplay = !!process.env.DISPLAY && process.env.DISPLAY.length > 0;
+// ====== Config ======
+const PREFERRED_PORT = parseInt(process.env.CAPCUT_LOGIN_PORT || '3002', 10);
+const PORT_RANGE = 10;
+const HOST = '0.0.0.0';
 
-// ====== Global status (dipakai dashboard) ======
-const status = {
+// ====== State ======
+const state = {
   bootTime: Date.now(),
-  browserLaunched: false,
-  loginPageLoaded: false,
-  mobileButtonFound: false,
-  mobileButtonClicked: false,
-  popupOpened: false,
-  qrDetected: false,
-  loginDetected: false,
-  currentPhase: 'starting',         // starting | launching-browser | loading-page | finding-button | clicking | waiting-qr | waiting-login | success | timeout | error
-  currentUrl: '',
-  popupUrl: '',
-  pageCount: 0,
-  frameCount: 0,
-  iframeCount: 0,
-  canvasCount: 0,
-  dialogCount: 0,
+  phase: 'waiting',        // waiting | validating | success | error
+  message: 'Paste your CapCut cookies below to begin.',
   cookieCount: 0,
-  hasSessionCookie: false,
-  lastError: '',
+  cookiesSavedAt: null,
+  username: null,
+  lastError: null,
+  lastValidation: null,
   actualHttpPort: null,
-  lastButtonClick: null,
-  recentLogs: [],   // [{ts, level, msg}]
-  screenshots: [],  // [{name, path, mtime, size, kind}]
+  history: [],             // [{ts, phase, msg}]
 };
 
-function pushLog(level, msg, extra) {
-  const entry = { ts: new Date().toISOString(), level, msg: String(msg).slice(0, 200), extra: extra ? JSON.stringify(extra).slice(0, 200) : '' };
-  status.recentLogs.push(entry);
-  if (status.recentLogs.length > 30) status.recentLogs.shift();
+function pushHistory(msg) {
+  state.history.push({ ts: new Date().toISOString(), phase: state.phase, msg });
+  if (state.history.length > 50) state.history.shift();
+  console.log(`[${state.phase}] ${msg}`);
 }
 
-// Wrap logger to also capture into status.recentLogs
-const origInfo = logger.info.bind(logger);
-const origWarn = logger.warn.bind(logger);
-const origError = logger.error.bind(logger);
-logger.info = (objOrMsg, msg) => { if (msg) pushLog('info', msg, objOrMsg); else pushLog('info', objOrMsg); return origInfo(objOrMsg, msg); };
-logger.warn = (objOrMsg, msg) => { if (msg) pushLog('warn', msg, objOrMsg); else pushLog('warn', objOrMsg); return origWarn(objOrMsg, msg); };
-logger.error = (objOrMsg, msg) => { if (msg) pushLog('error', msg, objOrMsg); else pushLog('error', objOrMsg); return origError(objOrMsg, msg); };
-
-function setStatus(phase, extra = {}) {
-  status.currentPhase = phase;
-  Object.assign(status, extra);
-}
-
-// Save status ke file supaya dashboard bisa baca (selain in-memory)
-function persistStatus() {
-  try {
-    fs.writeFileSync(statusJsonPath, JSON.stringify({
-      ...status,
-      screenshots: status.screenshots.slice(-12),
-      recentLogs: status.recentLogs.slice(-30),
-    }, null, 2));
-  } catch (_) {}
-}
-
-// ====== Helper: cari port kosong ======
+// ====== Port finder ======
 function isPortFree(port) {
   return new Promise((resolve) => {
     const tester = http.createServer();
     tester.once('error', () => resolve(false));
-    tester.once('listening', () => { tester.close(() => resolve(true)); });
-    tester.listen(port, '0.0.0.0');
+    tester.once('listening', () => tester.close(() => resolve(true)));
+    tester.listen(port, HOST);
   });
 }
 
-async function findFreePort(preferred) {
-  for (let p = preferred; p <= preferred + 9; p++) {
-    if (await isPortFree(p)) return p;
+async function findFreePort() {
+  for (let i = 0; i < PORT_RANGE; i++) {
+    const port = PREFERRED_PORT + i;
+    if (await isPortFree(port)) return port;
   }
-  return null;
+  throw new Error(`No free port in range ${PREFERRED_PORT}-${PREFERRED_PORT + PORT_RANGE - 1}`);
 }
 
-const HTTP_PORT = await findFreePort(PREFERRED_PORT);
-if (HTTP_PORT === null) {
-  console.error(`All ports ${PREFERRED_PORT}-${PREFERRED_PORT + 9} are busy. Set CAPCUT_LOGIN_PORT to a free port.`);
-  process.exit(1);
+// ====== Cookie parser ======
+// Accepts:
+//  (a) JSON array from Cookie-Editor extension: [{name, value, domain, ...}]
+//  (b) JSON object: {cookies: [...]} or {name: value, ...}
+//  (c) Cookie header string: name1=value1; name2=value2
+//  (d) Netscape cookies.txt format (one cookie per line, tab-separated)
+function parseCookies(rawInput) {
+  const input = rawInput.trim();
+  if (!input) throw new Error('Empty input');
+
+  // Try JSON
+  if (input.startsWith('[') || input.startsWith('{')) {
+    let data;
+    try {
+      data = JSON.parse(input);
+    } catch (e) {
+      throw new Error(`Invalid JSON: ${e.message}`);
+    }
+
+    let arr = null;
+    if (Array.isArray(data)) {
+      arr = data;
+    } else if (Array.isArray(data.cookies)) {
+      arr = data.cookies;
+    } else if (typeof data === 'object') {
+      // Could be a {name: value} map
+      const possibleCookies = Object.entries(data).filter(([k, v]) =>
+        typeof v === 'string' || typeof v === 'number'
+      );
+      if (possibleCookies.length > 0) {
+        arr = possibleCookies.map(([name, value]) => ({
+          name, value: String(value), domain: '.capcut.com', path: '/',
+        }));
+      }
+    }
+    if (!arr || arr.length === 0) {
+      throw new Error('JSON did not contain any cookies');
+    }
+
+    return arr.map(c => normalizeCookie(c)).filter(Boolean);
+  }
+
+  // Try Netscape format (starts with comment or has tabs)
+  if (input.startsWith('#') || input.includes('\t')) {
+    const lines = input.split(/\r?\n/);
+    const cookies = [];
+    for (const line of lines) {
+      if (!line.trim() || line.startsWith('#')) continue;
+      const parts = line.split('\t');
+      if (parts.length < 7) continue;
+      const [domain, flag, path, secure, expiration, name, value] = parts;
+      cookies.push({
+        name,
+        value,
+        domain: domain.startsWith('.') ? domain : `.${domain}`,
+        path: path || '/',
+        secure: secure === 'TRUE',
+        expires: parseInt(expiration, 10) || undefined,
+        httpOnly: false,
+      });
+    }
+    if (cookies.length > 0) return cookies.map(normalizeCookie).filter(Boolean);
+  }
+
+  // Try cookie header: name1=value1; name2=value2
+  if (input.includes('=')) {
+    const cookies = input.split(';').map(c => c.trim()).filter(Boolean).map(c => {
+      const idx = c.indexOf('=');
+      if (idx === -1) return null;
+      return {
+        name: c.slice(0, idx).trim(),
+        value: c.slice(idx + 1).trim(),
+        domain: '.capcut.com',
+        path: '/',
+      };
+    }).filter(Boolean);
+    if (cookies.length > 0) return cookies.map(normalizeCookie).filter(Boolean);
+  }
+
+  throw new Error('Could not parse input as JSON, Netscape, or cookie header format');
 }
-status.actualHttpPort = HTTP_PORT;
-if (HTTP_PORT !== PREFERRED_PORT) {
-  logger.warn(
-    { preferred: PREFERRED_PORT, actual: HTTP_PORT },
-    `Port ${PREFERRED_PORT} busy, using port ${HTTP_PORT} instead.`
-  );
-}
 
-logger.info({
-  userDataDir,
-  hasDisplay,
-  headless: !hasDisplay,
-  httpPort: HTTP_PORT,
-}, 'Manual login mode (headless Chromium + HTTP QR viewer)');
+function normalizeCookie(c) {
+  if (!c || typeof c !== 'object') return null;
+  const name = String(c.name || '').trim();
+  const value = String(c.value ?? '').trim();
+  if (!name) return null;
 
-// ====== HTTP server — JALANKAN DULU, sebelum browser launch ======
-const httpServer = http.createServer((req, res) => {
-  const url = req.url.split('?')[0];
+  let domain = String(c.domain || '.capcut.com').trim();
+  // Cookie-Editor sometimes uses hostOnly + domain without leading dot
+  if (!domain.startsWith('.') && !domain.startsWith('http')) {
+    domain = `.${domain}`;
+  }
+  // Strip protocol if present
+  domain = domain.replace(/^https?:\/\//, '');
 
-  // CORS + no-cache headers supaya dashboard auto-refresh reliable
-  const noCacheHeaders = {
-    'Cache-Control': 'no-store, no-cache, must-revalidate',
-    'Pragma': 'no-cache',
-    'Expires': '0',
+  let sameSite = (c.sameSite || 'lax').toString().toLowerCase();
+  if (!['strict', 'lax', 'none'].includes(sameSite)) sameSite = 'lax';
+
+  const cookie = {
+    name,
+    value,
+    domain,
+    path: c.path || '/',
+    secure: c.secure ?? true,
+    httpOnly: c.httpOnly ?? false,
+    sameSite,
   };
 
-  if (url === '/' || url === '/index.html') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...noCacheHeaders });
-    res.end(dashboardHtml());
-    return;
+  // Puppeteer expects sameSite: 'Lax' | 'Strict' | 'None' (capitalized)
+  cookie.sameSite = sameSite.charAt(0).toUpperCase() + sameSite.slice(1);
+
+  // Expiration
+  if (c.expirationDate && Number.isFinite(c.expirationDate)) {
+    cookie.expires = c.expirationDate;
+  } else if (c.expires && Number.isFinite(c.expires)) {
+    cookie.expires = c.expires;
   }
 
-  if (url === '/qr') {
-    // Prioritas: qr-latest.png (hasil scan QR-like), fallback main-page.png
-    const candidates = [qrLatestPath, mainPageShotPath];
-    let chosen = null;
-    for (const p of candidates) {
-      if (fs.existsSync(p) && fs.statSync(p).size > 1000) { chosen = p; break; }
-    }
-    if (!chosen) {
-      // Fallback: serve 1x1 png biar <img> tidak error
-      res.writeHead(200, { 'Content-Type': 'image/png', ...noCacheHeaders });
-      res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=', 'base64'));
-      return;
-    }
-    const stat = fs.statSync(chosen);
-    res.writeHead(200, {
-      'Content-Type': 'image/png',
-      'Content-Length': stat.size,
-      ...noCacheHeaders,
+  return cookie;
+}
+
+// ====== Validate + save cookies (via subprocess) ======
+// We spawn scripts/validate-cookies.js as a child process so that:
+//  - The HTTP server stays alive even if puppeteer/chrome crashes hard
+//  - Any uncaught exception in the validator doesn't take down the dashboard
+//  - The chrome process tree is fully reaped when the subprocess exits
+async function validateAndSaveCookies(rawCookieInput) {
+  const validatorScript = path.resolve(__dirname, 'validate-cookies.js');
+  if (!fs.existsSync(validatorScript)) {
+    throw new Error(`Validator script not found: ${validatorScript}`);
+  }
+
+  pushHistory(`Spawning validator subprocess: ${validatorScript}`);
+
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [validatorScript], {
+      cwd: projectRoot,
+      env: { ...process.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
-    fs.createReadStream(chosen).pipe(res);
-    return;
-  }
 
-  if (url === '/status') {
-    res.writeHead(200, { 'Content-Type': 'application/json', ...noCacheHeaders });
-    res.end(JSON.stringify({ ...status, screenshots: status.screenshots.slice(-12), recentLogs: status.recentLogs.slice(-30) }, null, 2));
-    return;
-  }
+    let stdout = '';
+    let stderr = '';
+    let resolved = false;
 
-  if (url === '/shot') {
-    // Serve screenshot by name (?name=main-page.png)
-    const name = (req.url.split('?')[1] || '').split('=')[1] || '';
-    const safe = path.basename(name);
-    const p = path.join(tmpDir, safe);
-    if (!fs.existsSync(p)) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('not found');
-      return;
-    }
-    const stat = fs.statSync(p);
-    res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': stat.size, ...noCacheHeaders });
-    fs.createReadStream(p).pipe(res);
-    return;
-  }
-
-  if (url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, port: HTTP_PORT, qrReady: fs.existsSync(qrLatestPath), phase: status.currentPhase }));
-    return;
-  }
-
-  if (url === '/debug-bundle') {
-    // Returns a JSON file with all debug info base64-encoded — user can download
-    // and send to developer for diagnosis. No zip dep needed.
-    persistStatus();
-    const bundle = {
-      generatedAt: new Date().toISOString(),
-      status,
-      files: {},
-    };
-    // Include all tracked screenshots + qr-latest + main-page + status json
-    const filesToBundle = [
-      { name: 'qr-latest.png', path: qrLatestPath },
-      { name: 'main-page.png', path: mainPageShotPath },
-      { name: 'status.json', path: statusJsonPath },
-    ];
-    for (const s of status.screenshots) {
-      filesToBundle.push({ name: s.name, path: s.path });
-    }
-    for (const f of filesToBundle) {
-      try {
-        if (fs.existsSync(f.path)) {
-          const buf = fs.readFileSync(f.path);
-          bundle.files[f.name] = {
-            size: buf.length,
-            contentType: f.name.endsWith('.json') ? 'application/json' : 'image/png',
-            base64: buf.toString('base64'),
-          };
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+      // Stream stdout lines as live progress
+      for (const line of stdout.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+          // Likely the final JSON result — don't log it as progress
+          continue;
         }
-      } catch (_) {}
-    }
-    const json = JSON.stringify(bundle, null, 2);
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Content-Disposition': `attachment; filename="capcut-login-debug-${Date.now()}.json"`,
-      ...noCacheHeaders,
+        if (trimmed) pushHistory(`[validator] ${trimmed}`);
+      }
     });
-    res.end(json);
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+      // Stream stderr lines as live progress
+      for (const line of chunk.toString().split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed) pushHistory(`[validator] ${trimmed}`);
+      }
+    });
+
+    child.on('error', (err) => {
+      if (resolved) return;
+      resolved = true;
+      pushHistory(`Failed to spawn validator: ${err.message}`);
+      resolve({ ok: false, error: `Spawn failed: ${err.message}` });
+    });
+
+    child.on('close', (code, signal) => {
+      if (resolved) return;
+      resolved = true;
+      pushHistory(`Validator exited code=${code} signal=${signal || '(none)'}`);
+
+      // Parse the last JSON object from stdout
+      const lines = stdout.split('\n').map(l => l.trim()).filter(Boolean);
+      let result = null;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          result = JSON.parse(lines[i]);
+          break;
+        } catch (_) {}
+      }
+
+      if (!result) {
+        resolve({
+          ok: false,
+          error: `Validator produced no JSON. Exit code ${code}, signal ${signal}. stderr: ${stderr.slice(-500)}`,
+        });
+        return;
+      }
+
+      resolve(result);
+    });
+
+    // Write the raw cookie input to the child's stdin
+    try {
+      child.stdin.write(rawCookieInput);
+      child.stdin.end();
+    } catch (e) {
+      pushHistory(`Failed to write to validator stdin: ${e.message}`);
+      try { child.kill('SIGTERM'); } catch (_) {}
+    }
+
+    // Safety timeout — 90s
+    setTimeout(() => {
+      if (!resolved) {
+        pushHistory('Validator timed out after 90s, killing');
+        try { child.kill('SIGKILL'); } catch (_) {}
+        resolved = true;
+        resolve({ ok: false, error: 'Validator timed out after 90 seconds' });
+      }
+    }, 90000);
+  });
+}
+
+// ====== HTTP server ======
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+
+  // CORS (in case user runs snippet from capcut.com tab)
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  // Dashboard
+  if (url.pathname === '/' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(dashboardHTML());
+    return;
+  }
+
+  // Status
+  if (url.pathname === '/api/status' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ...state,
+      uptimeSec: Math.floor((Date.now() - state.bootTime) / 1000),
+      cookiesJsonExists: fs.existsSync(cookiesJsonPath),
+      profileExists: fs.existsSync(userDataDir),
+      validationScreenshotExists: fs.existsSync(validationShotPath),
+    }));
+    return;
+  }
+
+  // Validation screenshot
+  if (url.pathname === '/validation-screenshot' && req.method === 'GET') {
+    if (!fs.existsSync(validationShotPath)) {
+      res.writeHead(404);
+      res.end('No screenshot yet');
+      return;
+    }
+    const buf = fs.readFileSync(validationShotPath);
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+    res.end(buf);
+    return;
+  }
+
+  // Snippet for console (returns JS that extracts cookies via document.cookie)
+  if (url.pathname === '/api/snippet' && req.method === 'GET') {
+    const port = state.actualHttpPort;
+    const snippet = `(function(){
+      var cookies = document.cookie.split('; ').map(function(pair){
+        var i = pair.indexOf('=');
+        return { name: pair.slice(0,i), value: pair.slice(i+1), domain: '.capcut.com', path: '/', secure: true, httpOnly: false, sameSite: 'lax' };
+      });
+      fetch('http://127.0.0.1:${port}/api/save-cookies', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(cookies)
+      }).then(function(r){return r.text();}).then(function(t){
+        alert('Sent '+cookies.length+' cookies to dashboard. Check the dashboard tab.');
+      }).catch(function(e){ alert('Failed: '+e.message); });
+    })();`;
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+    res.end(snippet);
+    return;
+  }
+
+  // Save cookies endpoint
+  if (url.pathname === '/api/save-cookies' && req.method === 'POST') {
+    // Read body
+    let body = '';
+    let bodySize = 0;
+    req.on('data', chunk => {
+      bodySize += chunk.length;
+      if (bodySize > 1024 * 1024) { // 1MB limit
+        req.destroy();
+        res.writeHead(413);
+        res.end('Body too large');
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', async () => {
+      try {
+        if (state.phase === 'validating') {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'Validation already in progress' }));
+          return;
+        }
+
+        // Pre-validate the input format (without actually parsing it here,
+        // so we can give a clean error before launching the subprocess)
+        let previewCount;
+        try {
+          const parsed = parseCookies(body);
+          previewCount = parsed.length;
+        } catch (e) {
+          state.phase = 'error';
+          state.lastError = e.message;
+          state.message = `Parse error: ${e.message}`;
+          pushHistory(`Cookie parse failed: ${e.message}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: `Parse error: ${e.message}` }));
+          return;
+        }
+
+        if (previewCount === 0) {
+          state.phase = 'error';
+          state.lastError = 'No cookies found in input';
+          state.message = 'No cookies found in input';
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'No cookies found' }));
+          return;
+        }
+
+        state.phase = 'validating';
+        state.message = `Validating ${previewCount} cookies...`;
+        state.cookieCount = previewCount;
+        state.lastError = null;
+        pushHistory(`Received ${previewCount} cookies, starting validation`);
+
+        // Send immediate ack
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ack: true, message: 'Validation started', cookieCount: previewCount }));
+
+        // Run validation in background (subprocess)
+        try {
+          const result = await validateAndSaveCookies(body);
+          state.lastValidation = result;
+
+          if (result.ok) {
+            state.phase = 'success';
+            state.message = `Login saved! ${result.reason || 'Cookies valid'}`;
+            state.cookiesSavedAt = new Date().toISOString();
+            state.username = result.username;
+            pushHistory(`VALIDATION SUCCESS: ${result.reason}`);
+          } else {
+            state.phase = 'error';
+            state.lastError = result.error;
+            state.message = `Validation failed: ${result.error}`;
+            pushHistory(`VALIDATION FAILED: ${result.error}`);
+          }
+        } catch (e) {
+          state.phase = 'error';
+          state.lastError = e.message;
+          state.message = `Validation error: ${e.message}`;
+          pushHistory(`VALIDATION ERROR: ${e.message}`);
+          console.error(e.stack);
+        }
+      } catch (e) {
+        state.phase = 'error';
+        state.lastError = e.message;
+        state.message = `Server error: ${e.message}`;
+        try {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: e.message }));
+        } catch (_) {}
+      }
+    });
+    return;
+  }
+
+  // Reset state
+  if (url.pathname === '/api/reset' && req.method === 'POST') {
+    state.phase = 'waiting';
+    state.message = 'Paste your CapCut cookies below to begin.';
+    state.lastError = null;
+    state.lastValidation = null;
+    state.cookiesSavedAt = null;
+    state.username = null;
+    state.cookieCount = 0;
+    pushHistory('State reset by user');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
     return;
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain' });
-  res.end('Not found. Try / or /qr or /status or /debug-bundle');
-});
-
-httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
-  logger.info(`HTTP dashboard listening on http://0.0.0.0:${HTTP_PORT}/`);
-  logger.info('──── INSTRUKSI LOGIN ────');
-  logger.info(`1. Di laptop, buka SSH tunnel ke server ini:`);
-  logger.info(`     ssh -L ${HTTP_PORT}:localhost:${HTTP_PORT} <user>@<server-host> -p <ssh-port>`);
-  logger.info(`2. Di browser lokal, buka: http://localhost:${HTTP_PORT}/`);
-  logger.info(`3. Tunggu sampai QR code muncul di dashboard. Scan pake aplikasi CapCut di HP:`);
-  logger.info(`     Buka CapCut di HP → Profile (tab kanan) → icon Scan di kanan atas`);
-  logger.info(`4. Script akan auto-detect login & save session ke ${userDataDir}`);
-  logger.info('─────────────────────────');
-});
-
-httpServer.on('error', (e) => {
-  logger.error({ err: e.message }, 'HTTP server error');
-  process.exit(1);
+  res.end('Not found');
 });
 
 // ====== Dashboard HTML ======
-function dashboardHtml() {
-  const uptimeS = Math.round((Date.now() - status.bootTime) / 1000);
-  const phaseLabel = {
-    'starting': 'Starting…',
-    'launching-browser': 'Launching Chromium…',
-    'loading-page': 'Loading CapCut login page…',
-    'finding-button': 'Finding "Continue with CapCut Mobile" button…',
-    'clicking': 'Clicking mobile login button…',
-    'waiting-qr': 'Waiting for QR code to appear…',
-    'waiting-login': 'QR ready — waiting for you to scan with CapCut mobile app',
-    'success': '✓ Login successful! Session saved.',
-    'timeout': '✗ Timeout — no login detected in 10 minutes.',
-    'error': '✗ Error occurred. Check logs below.',
-  }[status.currentPhase] || status.currentPhase;
-
+function dashboardHTML() {
+  const port = state.actualHttpPort;
   return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<title>CapCut Login Dashboard</title>
-<meta http-equiv="refresh" content="3">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CapCut Manual Login</title>
 <style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:#0f0f10;color:#eee;font-family:system-ui,-apple-system,sans-serif;padding:20px;min-height:100vh}
-  .wrap{max-width:1100px;margin:0 auto}
-  h1{font-size:22px;margin-bottom:4px;color:#fff}
-  .sub{opacity:.6;font-size:13px;margin-bottom:20px}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
-  @media(max-width:760px){.grid{grid-template-columns:1fr}}
-  .card{background:#1a1a1e;border:1px solid #2a2a2e;border-radius:10px;padding:14px 16px}
-  .card h2{font-size:14px;margin-bottom:10px;color:#9ca3af;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
-  .kv{display:flex;justify-content:space-between;padding:4px 0;font-size:13px;border-bottom:1px solid #232327}
-  .kv:last-child{border-bottom:none}
-  .kv .k{opacity:.6}
-  .kv .v{font-family:monospace;color:#e5e7eb}
-  .phase{font-size:15px;padding:10px 14px;border-radius:8px;background:#1f2937;color:#93c5fd;margin-bottom:16px;border-left:3px solid #3b82f6}
-  .phase.success{background:#1a3a1a;color:#7fff7f;border-left-color:#22c55e}
-  .phase.timeout{background:#3a1a1a;color:#ff7f7f;border-left-color:#ef4444}
-  .phase.error{background:#3a1a1a;color:#ff7f7f;border-left-color:#ef4444}
-  .qr-wrap{background:#fff;padding:12px;border-radius:10px;display:inline-block;text-align:center;width:100%}
-  .qr-wrap img{display:block;max-width:100%;height:auto;margin:0 auto;image-rendering:pixelated;min-height:200px}
-  .logs{background:#0a0a0c;border:1px solid #1f1f23;border-radius:8px;padding:10px;max-height:280px;overflow-y:auto;font-family:monospace;font-size:11px;line-height:1.5}
-  .log-line{padding:1px 0;word-break:break-all;white-space:pre-wrap}
-  .log-line.info{color:#cbd5e1}
-  .log-line.warn{color:#fbbf24}
-  .log-line.error{color:#f87171}
-  .log-ts{opacity:.4;margin-right:6px}
-  .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-top:8px}
-  .thumb{background:#0a0a0c;border:1px solid #1f1f23;border-radius:6px;overflow:hidden}
-  .thumb img{display:block;width:100%;height:auto;min-height:80px}
-  .thumb .label{padding:4px 6px;font-size:10px;font-family:monospace;color:#9ca3af;border-top:1px solid #1f1f23;word-break:break-all}
-  .empty{opacity:.4;font-size:12px;font-style:italic;padding:20px;text-align:center}
-  .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-left:6px}
-  .badge.on{background:#166534;color:#86efac}
-  .badge.off{background:#374151;color:#9ca3af}
-</style></head>
-<body><div class="wrap">
-<h1>CapCut Login Dashboard</h1>
-<div class="sub">Auto-refresh every 3s · Port ${HTTP_PORT} · Uptime ${uptimeS}s · <a href="/debug-bundle" style="color:#93c5fd" target="_blank">Download Debug Bundle (.json)</a></div>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    margin: 0; padding: 0;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    color: #e8e8e8; min-height: 100vh;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+  h1 {
+    font-size: 32px; font-weight: 700; margin: 0 0 8px;
+    background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .subtitle { color: #8a8a9a; font-size: 14px; margin-bottom: 32px; }
+  .status-bar {
+    display: flex; align-items: center; gap: 16px;
+    padding: 16px 20px; border-radius: 12px; margin-bottom: 24px;
+    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+    transition: all 0.3s;
+  }
+  .status-bar.validating { background: rgba(255, 193, 7, 0.1); border-color: rgba(255, 193, 7, 0.4); }
+  .status-bar.success    { background: rgba(40, 167, 69, 0.15); border-color: rgba(40, 167, 69, 0.5); }
+  .status-bar.error      { background: rgba(220, 53, 69, 0.15); border-color: rgba(220, 53, 69, 0.5); }
+  .status-dot {
+    width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+    background: #6c757d;
+  }
+  .status-bar.validating .status-dot { background: #ffc107; animation: pulse 1.2s infinite; }
+  .status-bar.success    .status-dot { background: #28a745; }
+  .status-bar.error      .status-dot { background: #dc3545; }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+  .status-text { flex: 1; font-size: 15px; }
+  .status-phase { font-weight: 600; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; opacity: 0.7; }
+  .status-message { font-size: 16px; margin-top: 2px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px; padding: 24px;
+  }
+  .card h2 { margin: 0 0 16px; font-size: 18px; font-weight: 600; color: #fff; }
+  .steps { list-style: none; padding: 0; margin: 0; counter-reset: step; }
+  .steps li {
+    counter-increment: step; padding: 12px 0 12px 48px; position: relative;
+    border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 14px; line-height: 1.6;
+  }
+  .steps li:last-child { border-bottom: none; }
+  .steps li::before {
+    content: counter(step); position: absolute; left: 0; top: 12px;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: linear-gradient(135deg, #00d2ff, #3a7bd5); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px;
+  }
+  .steps code {
+    background: rgba(0,0,0,0.4); padding: 2px 6px; border-radius: 4px;
+    font-family: 'SFMono-Regular', Menlo, monospace; font-size: 12px; color: #00d2ff;
+  }
+  .steps a { color: #00d2ff; text-decoration: none; }
+  .steps a:hover { text-decoration: underline; }
+  .btn {
+    display: inline-block; padding: 8px 14px; border-radius: 6px; font-size: 13px;
+    font-weight: 600; cursor: pointer; border: none; text-decoration: none;
+    transition: all 0.2s; font-family: inherit;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #00d2ff, #3a7bd5); color: #fff;
+  }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,210,255,0.3); }
+  .btn-secondary {
+    background: rgba(255,255,255,0.1); color: #e8e8e8; border: 1px solid rgba(255,255,255,0.2);
+  }
+  .btn-secondary:hover { background: rgba(255,255,255,0.15); }
+  .btn-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  textarea {
+    width: 100%; min-height: 180px; padding: 12px; border-radius: 8px;
+    background: rgba(0,0,0,0.4); color: #e8e8e8; border: 1px solid rgba(255,255,255,0.15);
+    font-family: 'SFMono-Regular', Menlo, monospace; font-size: 12px; resize: vertical;
+  }
+  textarea:focus { outline: none; border-color: #00d2ff; }
+  textarea:disabled { opacity: 0.5; cursor: not-allowed; }
+  .actions { display: flex; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+  .history {
+    max-height: 240px; overflow-y: auto; padding: 12px; background: rgba(0,0,0,0.3);
+    border-radius: 8px; font-family: 'SFMono-Regular', Menlo, monospace; font-size: 11px;
+    line-height: 1.5;
+  }
+  .history-line { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .history-line:last-child { border-bottom: none; }
+  .history-ts { color: #6c757d; }
+  .history-phase { color: #00d2ff; font-weight: 600; }
+  .history-phase.success { color: #28a745; }
+  .history-phase.error { color: #dc3545; }
+  .history-phase.validating { color: #ffc107; }
+  .screenshot-card { padding: 16px; }
+  .screenshot-card img { width: 100%; border-radius: 8px; margin-top: 8px; }
+  .metadata { font-size: 12px; color: #8a8a9a; margin-top: 8px; }
+  .metadata strong { color: #e8e8e8; }
+  .hint {
+    background: rgba(0, 210, 255, 0.08); border-left: 3px solid #00d2ff;
+    padding: 12px 14px; margin-top: 12px; border-radius: 4px; font-size: 12px;
+    line-height: 1.5;
+  }
+  .hint strong { color: #00d2ff; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px;
+    font-weight: 600; margin-left: 6px;
+  }
+  .badge-ok { background: rgba(40,167,69,0.2); color: #28a745; }
+  .badge-no { background: rgba(220,53,69,0.2); color: #dc3545; }
+  .badge-neutral { background: rgba(108,117,125,0.2); color: #8a8a9a; }
+  .next-steps {
+    margin-top: 16px; padding: 16px; background: rgba(40,167,69,0.1);
+    border-radius: 8px; border: 1px solid rgba(40,167,69,0.3);
+  }
+  .next-steps h3 { margin: 0 0 8px; font-size: 14px; color: #28a745; }
+  .next-steps code {
+    background: rgba(0,0,0,0.4); padding: 6px 10px; border-radius: 4px;
+    font-family: monospace; font-size: 12px; display: block; margin-top: 6px;
+    color: #00d2ff;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>CapCut Manual Login</h1>
+  <div class="subtitle">Login in your own browser, paste cookies here. No QR extraction, no headless login.</div>
 
-<div class="phase ${status.currentPhase}">${phaseLabel}${status.lastError ? `<br><span style="font-size:12px;color:#fca5a5">Error: ${escapeHtml(status.lastError)}</span>` : ''}</div>
-
-<div class="grid">
-  <div class="card">
-    <h2>QR Code (scan this with CapCut mobile app)</h2>
-    <div class="qr-wrap">
-      <img src="/qr?t=${Date.now()}" alt="QR code">
-    </div>
-    <div style="margin-top:8px;font-size:11px;opacity:.6;text-align:center">
-      Buka CapCut di HP → Profile (tab kanan) → icon Scan di kanan atas
+  <div id="status-bar" class="status-bar">
+    <div class="status-dot"></div>
+    <div class="status-text">
+      <div id="status-phase" class="status-phase">Waiting</div>
+      <div id="status-message" class="status-message">Loading...</div>
     </div>
   </div>
 
-  <div class="card">
-    <h2>Status</h2>
-    <div class="kv"><span class="k">Phase</span><span class="v">${status.currentPhase}</span></div>
-    <div class="kv"><span class="k">Browser launched</span><span class="v">${status.browserLaunched ? '✓' : '✗'}</span></div>
-    <div class="kv"><span class="k">Login page loaded</span><span class="v">${status.loginPageLoaded ? '✓' : '✗'}</span></div>
-    <div class="kv"><span class="k">Mobile button found</span><span class="v">${status.mobileButtonFound ? '✓' : '✗'}</span></div>
-    <div class="kv"><span class="k">Button clicked</span><span class="v">${status.mobileButtonClicked ? '✓' : '✗'}</span></div>
-    <div class="kv"><span class="k">Popup opened</span><span class="v">${status.popupOpened ? '✓' : '✗'}</span></div>
-    <div class="kv"><span class="k">QR detected</span><span class="v">${status.qrDetected ? '✓' : '✗'}</span></div>
-    <div class="kv"><span class="k">Login detected</span><span class="v">${status.loginDetected ? '✓' : '✗'}</span></div>
-    <div class="kv"><span class="k">Page count</span><span class="v">${status.pageCount}</span></div>
-    <div class="kv"><span class="k">Frame count</span><span class="v">${status.frameCount}</span></div>
-    <div class="kv"><span class="k">Iframe count</span><span class="v">${status.iframeCount}</span></div>
-    <div class="kv"><span class="k">Canvas count</span><span class="v">${status.canvasCount}</span></div>
-    <div class="kv"><span class="k">Dialog count</span><span class="v">${status.dialogCount}</span></div>
-    <div class="kv"><span class="k">Cookies</span><span class="v">${status.cookieCount}</span></div>
-    <div class="kv"><span class="k">Session cookie</span><span class="v">${status.hasSessionCookie ? '✓' : '✗'}</span></div>
-    <div class="kv"><span class="k">Current URL</span><span class="v" style="font-size:10px;text-align:right;max-width:60%;word-break:break-all">${escapeHtml(status.currentUrl || '-')}</span></div>
-    ${status.popupUrl ? `<div class="kv"><span class="k">Popup URL</span><span class="v" style="font-size:10px;text-align:right;max-width:60%;word-break:break-all">${escapeHtml(status.popupUrl)}</span></div>` : ''}
-    ${status.lastError ? `<div class="kv"><span class="k">Last error</span><span class="v" style="color:#f87171;font-size:10px">${escapeHtml(status.lastError)}</span></div>` : ''}
-  </div>
-</div>
+  <div class="grid">
+    <div class="card">
+      <h2>How to login</h2>
+      <ol class="steps">
+        <li>
+          Open <a href="https://www.capcut.com/login" target="_blank">https://www.capcut.com/login</a>
+          in your browser.
+        </li>
+        <li>
+          Login using any method (CapCut Mobile QR, email, Google, etc.).
+        </li>
+        <li>
+          After login succeeds, export your cookies. Easiest: install the
+          <a href="https://cookie-editor.com" target="_blank">Cookie-Editor</a> browser extension,
+          click its icon, then click <strong>Export</strong> → <strong>Export as JSON</strong>.
+        </li>
+        <li>
+          Paste the exported JSON into the textarea on the right and click
+          <strong>Save & Validate</strong>.
+        </li>
+        <li>
+          Wait ~10 seconds. The program will launch a headless browser, set your cookies,
+          navigate to a login-gated page, and verify you're logged in.
+        </li>
+      </ol>
 
-<div class="card" style="margin-bottom:20px">
-  <h2>Screenshots gallery (all pages + iframes)</h2>
-  ${status.screenshots.length === 0 ? '<div class="empty">No screenshots yet — browser is still launching or page is still loading.</div>' : `
-  <div class="gallery">
-    ${status.screenshots.slice(-12).reverse().map(s => `
-      <div class="thumb">
-        <img src="/shot?name=${encodeURIComponent(s.name)}" alt="${s.name}">
-        <div class="label">${s.name}<br>${Math.round(s.size / 1024)}KB · ${s.kind}</div>
+      <div class="hint">
+        <strong>Alternative methods (if you can't install Cookie-Editor):</strong>
+        <ul style="margin:6px 0 0 0; padding-left: 18px;">
+          <li><strong>DevTools:</strong> F12 → Application → Cookies → https://www.capcut.com → copy each cookie row</li>
+          <li><strong>Console snippet:</strong> After logging in, run this in the CapCut tab's console (F12 → Console):
+            <code style="display:block;margin-top:4px;background:rgba(0,0,0,0.4);padding:6px 8px;border-radius:4px;font-size:11px;">javascript:(function(){var c=document.cookie.split('; ').map(function(p){var i=p.indexOf('=');return{name:p.slice(0,i),value:p.slice(i+1),domain:'.capcut.com',path:'/',secure:true,httpOnly:false,sameSite:'lax'};});fetch('http://127.0.0.1:${port}/api/save-cookies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)}).then(function(r){return r.text();}).then(function(t){alert('Sent '+c.length+' cookies (note: HttpOnly cookies like sessionid are NOT included). Use Cookie-Editor for full cookies.');}).catch(function(e){alert('Failed: '+e.message);});})();</code>
+            ⚠️ This bookmarklet does NOT capture HttpOnly cookies (sessionid). Use Cookie-Editor for a full export.
+          </li>
+        </ul>
       </div>
-    `).join('')}
-  </div>`}
-</div>
+    </div>
 
-<div class="card">
-  <h2>Recent logs</h2>
-  <div class="logs">
-    ${status.recentLogs.length === 0 ? '<div class="empty">No logs yet.</div>' :
-      status.recentLogs.slice().reverse().map(l => `
-        <div class="log-line ${l.level}"><span class="log-ts">${l.ts.slice(11, 19)}</span>[${l.level}] ${escapeHtml(l.msg)}${l.extra ? ' ' + escapeHtml(l.extra) : ''}</div>
-      `).join('')}
+    <div class="card">
+      <h2>Paste cookies</h2>
+      <textarea id="cookies-input" placeholder='Paste cookies here. Accepted formats:
+  • Cookie-Editor JSON: [{"name":"...","value":"...","domain":"..."}, ...]
+  • Cookie header: name1=value1; name2=value2
+  • Netscape cookies.txt format'></textarea>
+      <div class="actions">
+        <button class="btn btn-primary" id="save-btn" onclick="saveCookies()">Save &amp; Validate</button>
+        <button class="btn btn-secondary" id="clear-btn" onclick="clearInput()">Clear</button>
+        <button class="btn btn-secondary" id="reset-btn" onclick="resetState()">Reset State</button>
+      </div>
+
+      <div id="result-area" style="margin-top: 16px;"></div>
+
+      <div id="next-steps" style="display:none;" class="next-steps">
+        <h3>✓ Login saved! Next steps</h3>
+        <div>You can now start the CapCut render API:</div>
+        <code>cd capcut-api &amp;&amp; npm start</code>
+        <div style="margin-top:8px;">Then check session validity:</div>
+        <code>node scripts/verify-session.js</code>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Validation log</h2>
+      <div id="history" class="history">
+        <div class="history-line"><span class="history-ts">--:--:--</span> <span class="history-phase">waiting</span> Loading...</div>
+      </div>
+    </div>
+
+    <div class="card screenshot-card">
+      <h2>Validation screenshot</h2>
+      <div id="screenshot-meta" class="metadata">No screenshot yet. After validation, this shows the page the headless browser loaded.</div>
+      <img id="validation-screenshot" src="" alt="" style="display:none;" />
+    </div>
   </div>
 </div>
 
-</div></body></html>`;
-}
+<script>
+  const port = ${port};
+  let pollTimer = null;
 
-function escapeHtml(s) {
-  return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-// ====== Helper: scan file size, simpan ke status.screenshots ======
-function trackScreenshot(name, kind = 'unknown') {
-  const p = path.join(tmpDir, name);
-  if (!fs.existsSync(p)) return null;
-  const stat = fs.statSync(p);
-  const entry = { name, path: p, mtime: stat.mtimeMs, size: stat.size, kind };
-  // Replace if same name already tracked
-  const idx = status.screenshots.findIndex(s => s.name === name);
-  if (idx >= 0) status.screenshots[idx] = entry;
-  else status.screenshots.push(entry);
-  return entry;
-}
-
-// ====== Launch browser ======
-// Note: main flow is wrapped in a labeled block so we can `break mainFlow;`
-// to skip the rest if browser launch or page open fails — but keep the HTTP
-// server alive so user can see the error in the dashboard.
-setStatus('launching-browser');
-logger.info('Launching Chromium…');
-let browser = null;
-
-// CRITICAL HELPER: page.screenshot() can hang FOREVER on some Linux servers
-// when the page has heavy canvas/animation/GPU activity (CapCut login page has
-// splash animations). When it hangs, .catch() doesn't help because the promise
-// never resolves OR rejects — it just sits there. This wraps every screenshot
-// call in a 5s timeout via Promise.race. If timeout, we log + move on so the
-// script keeps progressing (button search, polling, etc.).
-async function screenshotWithTimeout(target, opts = {}, ms = 5000) {
-  try {
-    const result = await Promise.race([
-      target.screenshot(opts),
-      new Promise((_, reject) => setTimeout(() => reject(new Error(`screenshot timeout after ${ms}ms`)), ms)),
-    ]);
-    return result;
-  } catch (e) {
-    // Don't throw — caller already wrote .catch(()=>{}) everywhere, but to be safe
-    logger.warn({ err: e.message, opts: Object.keys(opts).join(',') }, 'Screenshot failed or timed out, skipping');
-    return null;
-  }
-}
-
-mainFlow: {
-try {
-  browser = await puppeteer.launch({
-    headless: !hasDisplay,
-    userDataDir,
-    defaultViewport: { width: 1440, height: 900 },
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-software-rasterizer',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-features=IsolateOrigins,site-per-process',
-      '--disable-infobars',
-      '--window-size=1440,900',
-      '--lang=en-US,en',
-      '--mute-audio',
-      '--no-first-run',
-      '--no-default-browser-check',
-    ],
-    env: {
-      ...process.env,
-      DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS || '/dev/null',
-    },
-  });
-  status.browserLaunched = true;
-  logger.info('Chromium launched successfully');
-} catch (e) {
-  status.lastError = e.message;
-  logger.error({ err: e.message }, 'Failed to launch Chromium');
-  setStatus('error', { lastError: e.message });
-  persistStatus();
-  // Keep HTTP server alive supaya user bisa lihat error di dashboard
-  // process.exit(1) — JANGAN, biar user bisa lihat dashboard
-  // Start a heartbeat to keep status fresh
-  setInterval(persistStatus, 2000);
-  break mainFlow;
-}
-
-const pages = await browser.pages();
-const page = pages[0] || await browser.newPage();
-
-// Track new tabs/popups
-let popupPage = null;
-browser.on('targetcreated', async (target) => {
-  const type = target.type();
-  const url = target.url();
-  logger.info({ type, url: url.slice(0, 100) }, 'New browser target created');
-  if (type === 'page' && !popupPage) {
+  async function fetchStatus() {
     try {
-      popupPage = await target.page();
-      if (popupPage) {
-        status.popupOpened = true;
-        status.popupUrl = popupPage.url();
-        logger.info({ url }, 'Popup/new tab detected, tracking it for QR code');
-      }
-    } catch (_) {}
-  }
-});
-
-await page.setUserAgent(
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-);
-
-await page.evaluateOnNewDocument(() => {
-  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5].map(() => ({})) });
-  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-  Object.defineProperty(navigator, 'platform', { get: () => 'Linux x86_64' });
-  window.chrome = window.chrome || { runtime: {} };
-});
-
-// ====== Buka halaman login CapCut ======
-setStatus('loading-page');
-logger.info('Opening CapCut login page...');
-
-const loginUrls = [
-  'https://www.capcut.com/login?enter_from=https%3A%2F%2Fwww.capcut.com%2Ftemplates',
-  'https://www.capcut.com/login',
-  'https://www.capcut.com/zh-tw/login',
-];
-
-let pageOpened = false;
-for (const url of loginUrls) {
-  try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await new Promise((r) => setTimeout(r, 3000));
-    logger.info({ url: page.url() }, 'Page loaded');
-    status.loginPageLoaded = true;
-    status.currentUrl = page.url();
-    pageOpened = true;
-    // Take immediate screenshot supaya dashboard langsung ada gambar
-    // CRITICAL: wrapped with 5s timeout — on some Linux servers this can hang forever
-    await screenshotWithTimeout(page, { path: mainPageShotPath, fullPage: false });
-    trackScreenshot('main-page.png', 'main');
-    break;
-  } catch (e) {
-    logger.warn({ url, err: e.message }, 'Failed to open login URL');
-    status.lastError = e.message;
-  }
-}
-
-if (!pageOpened) {
-  logger.error('Could not open CapCut login page. Check internet connection.');
-  setStatus('error', { lastError: 'Could not open CapCut login page' });
-  persistStatus();
-  setInterval(persistStatus, 2000);
-  break mainFlow;
-}
-
-// ====== Step 1: Click "Continue with CapCut Mobile" to reveal QR code ======
-setStatus('finding-button');
-logger.info('Looking for "Continue with CapCut Mobile" button...');
-
-const MOBILE_BTN_TEXTS = [
-  'Continue with CapCut Mobile',
-  'CapCut Mobile',
-  'Sign in with CapCut Mobile',
-  'Login with CapCut Mobile',
-  '扫码登录',
-  '掃碼登入',
-  'Scan to login',
-  'Scan QR',
-  'QR Code Login',
-];
-
-async function findMobileLoginButton(targetPage) {
-  const result = await targetPage.evaluate((texts) => {
-    const lowerTexts = texts.map((t) => t.toLowerCase());
-    const clickableSelectors = 'button, a, div[role="button"], span[role="button"], [class*="btn" i], [class*="button" i]';
-    const candidates = Array.from(document.querySelectorAll(clickableSelectors));
-    for (const el of candidates) {
-      const text = (el.innerText || el.textContent || '').trim().toLowerCase();
-      if (!text || text.length > 100) continue;
-      const matches = lowerTexts.some((t) => text === t || text.includes(t));
-      if (!matches) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 100 || rect.height < 20) continue;
-      if (rect.top < 0 || rect.left < 0) continue;
-      if (text.includes('google') || text.includes('email') || text.includes('tiktok') || text.includes('facebook')) continue;
-      el.setAttribute('data-capcut-mobile-btn', 'true');
-      return { found: true, text: text.slice(0, 80), tag: el.tagName.toLowerCase(), width: rect.width, height: rect.height, top: rect.top, left: rect.left };
+      const r = await fetch('/api/status');
+      const s = await r.json();
+      updateUI(s);
+    } catch (e) {
+      console.error('Status poll error:', e);
     }
-    return { found: false };
-  }, MOBILE_BTN_TEXTS);
-  return result;
-}
-
-let mobileBtnClicked = false;
-for (let attempt = 0; attempt < 8 && !mobileBtnClicked; attempt++) {
-  try {
-    const mobileBtnInfo = await findMobileLoginButton(page);
-    if (mobileBtnInfo.found) {
-      status.mobileButtonFound = true;
-      setStatus('clicking');
-      logger.info({ attempt, ...mobileBtnInfo }, 'Found CapCut Mobile button, clicking...');
-
-      const centerX = mobileBtnInfo.left + mobileBtnInfo.width / 2;
-      const centerY = mobileBtnInfo.top + mobileBtnInfo.height / 2;
-
-      try {
-        await page.mouse.move(centerX, centerY, { steps: 5 });
-        await new Promise((r) => setTimeout(r, 200));
-        await page.mouse.click(centerX, centerY, { delay: 50 });
-        mobileBtnClicked = true;
-        status.mobileButtonClicked = true;
-        status.lastButtonClick = { x: centerX, y: centerY, text: mobileBtnInfo.text };
-        logger.info({ x: centerX, y: centerY }, 'Real mouse click sent to button center');
-      } catch (e) {
-        logger.warn({ err: e.message }, 'Mouse click failed, trying element.click() fallback');
-        try {
-          const handle = await page.$('[data-capcut-mobile-btn="true"]');
-          if (handle) {
-            await handle.click();
-            mobileBtnClicked = true;
-            status.mobileButtonClicked = true;
-            logger.info('ElementHandle.click() fallback succeeded');
-          }
-        } catch (e2) {
-          logger.warn({ err: e2.message }, 'ElementHandle.click() also failed');
-          status.lastError = e2.message;
-        }
-      }
-
-      await page.evaluate(() => {
-        const btn = document.querySelector('[data-capcut-mobile-btn="true"]');
-        if (btn) btn.removeAttribute('data-capcut-mobile-btn');
-      }).catch(() => {});
-
-      if (mobileBtnClicked) break;
-    }
-  } catch (e) {
-    logger.warn({ err: e.message, attempt }, 'Error finding mobile button');
-    status.lastError = e.message;
-  }
-  if (!mobileBtnClicked) {
-    if (attempt === 0) logger.warn('CapCut Mobile button not found yet, retrying...');
-    await new Promise((r) => setTimeout(r, 2000));
-  }
-}
-
-if (!mobileBtnClicked) {
-  logger.warn('Could not find "Continue with CapCut Mobile" button after 8 attempts.');
-  logger.info('Continuing anyway — will try to detect QR if it auto-appears...');
-} else {
-  setStatus('waiting-qr');
-  logger.info('Waiting for QR code modal to render...');
-  await new Promise((r) => setTimeout(r, 3000));
-}
-
-// Take immediate post-click screenshot
-await screenshotWithTimeout(page, { path: path.join(tmpDir, 'after-click.png'), fullPage: false });
-trackScreenshot('after-click.png', 'post-click');
-
-// ====== Polling: detect login + capture QR from ALL pages/frames ======
-const startTime = Date.now();
-let lastScreenshotTime = 0;
-let qrFound = false;
-let tries = 0;
-
-async function captureAllScreenshots() {
-  const allPages = await browser.pages().catch(() => []);
-  status.pageCount = allPages.length;
-
-  // 1. Screenshot main page (5s timeout — never hang on slow servers)
-  await screenshotWithTimeout(page, { path: mainPageShotPath, fullPage: false });
-  trackScreenshot('main-page.png', 'main');
-
-  // 2. Screenshot popup page if exists
-  if (popupPage && !popupPage.isClosed()) {
-    const popupShotPath = path.join(tmpDir, 'popup.png');
-    await screenshotWithTimeout(popupPage, { path: popupShotPath, fullPage: false });
-    trackScreenshot('popup.png', 'popup');
-    status.popupUrl = popupPage.url();
   }
 
-  // 3. Screenshot each same-origin iframe content (kalau accessible)
-  try {
-    const frames = page.frames();
-    status.frameCount = frames.length;
-    let iframeIdx = 0;
-    for (const frame of frames) {
-      if (frame === page.mainFrame()) continue; // skip main, already shot
-      iframeIdx++;
-      try {
-        const frameUrl = frame.url();
-        if (!frameUrl || frameUrl === 'about:blank') continue;
-        const frameShotPath = path.join(tmpDir, `frame-${iframeIdx}.png`);
-        const frameInfo = await page.evaluate((idx) => {
-          const iframes = Array.from(document.querySelectorAll('iframe'));
-          const f = iframes[idx - 1];
-          if (!f) return null;
-          const r = f.getBoundingClientRect();
-          return { top: r.top, left: r.left, width: r.width, height: r.height };
-        }, iframeIdx).catch(() => null);
+  function updateUI(s) {
+    const bar = document.getElementById('status-bar');
+    const phase = document.getElementById('status-phase');
+    const msg = document.getElementById('status-message');
 
-        if (frameInfo && frameInfo.width > 50 && frameInfo.height > 50) {
-          await screenshotWithTimeout(page, {
-            path: frameShotPath,
-            clip: {
-              x: Math.max(0, frameInfo.left),
-              y: Math.max(0, frameInfo.top),
-              width: Math.min(1440, frameInfo.width),
-              height: Math.min(900, frameInfo.height),
-            },
-          });
-          trackScreenshot(`frame-${iframeIdx}.png`, 'iframe');
-        }
-      } catch (_) {}
+    bar.className = 'status-bar ' + s.phase;
+    phase.textContent = s.phase.toUpperCase();
+    phase.className = 'status-phase ' + s.phase;
+    msg.textContent = s.message;
+
+    // History
+    const histEl = document.getElementById('history');
+    if (s.history && s.history.length > 0) {
+      histEl.innerHTML = s.history.slice().reverse().map(h => {
+        const t = h.ts.split('T')[1].split('.')[0];
+        return '<div class="history-line"><span class="history-ts">' + t + '</span> <span class="history-phase ' + h.phase + '">[' + h.phase + ']</span> ' + escapeHtml(h.msg) + '</div>';
+      }).join('');
     }
-  } catch (_) {}
 
-  // 4. Update diagnostic counts
-  try {
-    const diag = await page.evaluate(() => ({
-      canvases: document.querySelectorAll('canvas').length,
-      iframes: document.querySelectorAll('iframe').length,
-      dialogs: document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="popup" i], [class*="dialog" i]').length,
-      overlays: Array.from(document.querySelectorAll('div')).filter((d) => {
-        const s = getComputedStyle(d);
-        const r = d.getBoundingClientRect();
-        return (s.position === 'fixed' || s.position === 'absolute') && r.width > 200 && r.height > 200 && s.zIndex !== 'auto' && parseInt(s.zIndex || '0', 10) > 100;
-      }).length,
-    })).catch(() => ({}));
-    status.iframeCount = diag.iframes || 0;
-    status.canvasCount = diag.canvases || 0;
-    status.dialogCount = diag.dialogs || 0;
-  } catch (_) {}
+    // Screenshot
+    const ssImg = document.getElementById('validation-screenshot');
+    const ssMeta = document.getElementById('screenshot-meta');
+    if (s.validationScreenshotExists) {
+      ssImg.style.display = 'block';
+      ssImg.src = '/validation-screenshot?t=' + Date.now();
+      if (s.lastValidation) {
+        const v = s.lastValidation;
+        ssMeta.innerHTML = 'URL: <strong>' + escapeHtml(v.finalUrl || '') + '</strong><br>' +
+          'Title: <strong>' + escapeHtml(v.title || '') + '</strong><br>' +
+          'Cookies set: <strong>' + (v.cookieCount || 0) + '</strong>, ' +
+          'Session cookies: <strong>' + (v.sessionCookieCount || 0) + '</strong><br>' +
+          'passport: ' + badge(v.hasPassport) + ' ' +
+          'sessionid: ' + badge(v.hasSessionId) + '<br>' +
+          'avatar: ' + badge(v.probe?.hasAvatar) + ' ' +
+          'loginText: ' + badge(v.probe?.hasLoginText) + ' ' +
+          'accountText: ' + badge(v.probe?.hasAccountText);
+      } else {
+        ssMeta.textContent = 'Screenshot available';
+      }
+    } else {
+      ssImg.style.display = 'none';
+      ssMeta.textContent = 'No screenshot yet. After validation, this shows the page the headless browser loaded.';
+    }
+
+    // Result + next steps
+    const resultArea = document.getElementById('result-area');
+    const nextSteps = document.getElementById('next-steps');
+    if (s.phase === 'success') {
+      resultArea.innerHTML = '<div style="padding:12px;background:rgba(40,167,69,0.15);border:1px solid rgba(40,167,69,0.4);border-radius:8px;color:#28a745;">' +
+        '<strong>✓ Login successful!</strong> ' + escapeHtml(s.message) + '</div>';
+      nextSteps.style.display = 'block';
+    } else if (s.phase === 'error') {
+      resultArea.innerHTML = '<div style="padding:12px;background:rgba(220,53,69,0.15);border:1px solid rgba(220,53,69,0.4);border-radius:8px;color:#dc3545;">' +
+        '<strong>✗ Validation failed</strong><br>' + escapeHtml(s.lastError || s.message) + '</div>';
+      nextSteps.style.display = 'none';
+    } else if (s.phase === 'validating') {
+      resultArea.innerHTML = '<div style="padding:12px;background:rgba(255,193,7,0.15);border:1px solid rgba(255,193,7,0.4);border-radius:8px;color:#ffc107;">' +
+        '⏳ Validating cookies... (launching headless browser, this takes ~10s)</div>';
+      nextSteps.style.display = 'none';
+    } else {
+      resultArea.innerHTML = '';
+      nextSteps.style.display = 'none';
+    }
+
+    // Disable input while validating
+    const input = document.getElementById('cookies-input');
+    const saveBtn = document.getElementById('save-btn');
+    input.disabled = (s.phase === 'validating');
+    saveBtn.disabled = (s.phase === 'validating');
+    saveBtn.textContent = (s.phase === 'validating') ? 'Validating...' : 'Save & Validate';
+  }
+
+  function badge(v) {
+    if (v === true || v === 'true') return '<span class="badge badge-ok">YES</span>';
+    if (v === false || v === 'false') return '<span class="badge badge-no">NO</span>';
+    return '<span class="badge badge-neutral">?</span>';
+  }
+
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  async function saveCookies() {
+    const input = document.getElementById('cookies-input');
+    const text = input.value.trim();
+    if (!text) {
+      alert('Paste cookies first');
+      return;
+    }
+    try {
+      const r = await fetch('/api/save-cookies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: text,
+      });
+      const data = await r.json();
+      if (!data.ok && !data.ack) {
+        alert('Error: ' + (data.error || 'Unknown'));
+      }
+      // UI will update via poll
+    } catch (e) {
+      alert('Request failed: ' + e.message);
+    }
+  }
+
+  function clearInput() {
+    document.getElementById('cookies-input').value = '';
+  }
+
+  async function resetState() {
+    if (!confirm('Reset state?')) return;
+    await fetch('/api/reset', { method: 'POST' });
+    fetchStatus();
+  }
+
+  // Start polling
+  fetchStatus();
+  pollTimer = setInterval(fetchStatus, 2000);
+</script>
+</body>
+</html>`;
 }
 
-// Find QR code element AND extract its pixels via canvas.toDataURL() or img.src.
-// CRITICAL: validates that canvas has non-uniform pixel content (i.e. the QR
-// has actually been drawn, not just the empty canvas element).
-async function findQrCanvasOrImg(targetPage) {
-  return await targetPage.evaluate(() => {
-    function isCanvasNonUniform(canvas) {
-      // Returns true if canvas has actual varying pixel content (not blank).
-      // CapCut's QR canvas is sometimes created empty and drawn into ~200-500ms later.
-      try {
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return false;
-        const w = canvas.width;
-        const h = canvas.height;
-        if (w < 50 || h < 50) return false;
-        const data = ctx.getImageData(0, 0, w, h).data;
-        if (!data || data.length < 16) return false;
-        // Sample at most 400 pixels (every Nth pixel) for speed
-        const stride = Math.max(4, Math.floor(data.length / 4 / 400)) * 4;
-        let blackCount = 0, whiteCount = 0, sampleCount = 0;
-        for (let i = 0; i < data.length; i += stride) {
-          const r = data[i], g = data[i + 1], b = data[i + 2];
-          const lum = (r + g + b) / 3;
-          if (lum < 80) blackCount++;
-          else if (lum > 180) whiteCount++;
-          sampleCount++;
-        }
-        if (sampleCount === 0) return false;
-        // Real QR: at least 10% black AND 10% white. Blank canvas would be ~100% one color.
-        const blackRatio = blackCount / sampleCount;
-        const whiteRatio = whiteCount / sampleCount;
-        return blackRatio > 0.1 && whiteRatio > 0.1;
-      } catch (_) {
-        return false; // canvas not readable (CORS, tainted) — treat as no QR
-      }
-    }
+// ====== Boot ======
+(async () => {
+  const port = await findFreePort();
+  state.actualHttpPort = port;
 
-    function extractCanvasDataUrl(canvas) {
-      try { return canvas.toDataURL('image/png'); } catch (_) { return null; }
-    }
-
-    // Strategy 1: canvas with reasonable QR dimensions + non-uniform content
-    const canvases = Array.from(document.querySelectorAll('canvas'));
-    for (const c of canvases) {
-      const rect = c.getBoundingClientRect();
-      if (Math.abs(rect.width - rect.height) < 20 && rect.width >= 100 && rect.width <= 500) {
-        const parent = c.parentElement;
-        const parentClass = parent ? parent.className.toLowerCase() : '';
-        if (parentClass.includes('logo') || parentClass.includes('icon')) continue;
-
-        // VALIDATE: canvas must have actual QR pixels drawn, not be blank
-        if (!isCanvasNonUniform(c)) {
-          // Canvas exists but blank — QR not yet rendered. Keep looking/waiting.
-          return { found: false, blankCanvas: true, w: rect.width, h: rect.height };
-        }
-
-        const dataUrl = extractCanvasDataUrl(c);
-        return {
-          found: true,
-          type: 'canvas',
-          width: rect.width,
-          height: rect.height,
-          top: rect.top,
-          left: rect.left,
-          dataUrl,
-        };
-      }
-    }
-
-    // Strategy 2: img with qr-ish src/alt OR img with data:image/png src (QR as base64)
-    const imgs = Array.from(document.querySelectorAll('img'));
-    for (const i of imgs) {
-      const src = (i.src || '');
-      const alt = (i.alt || '').toLowerCase();
-      const rect = i.getBoundingClientRect();
-      if (rect.width < 80) continue;
-      const srcLow = src.toLowerCase();
-      if (srcLow.includes('qr') || alt.includes('qr') ||
-          (src.startsWith('data:image/png;base64,') && rect.width >= 100 && Math.abs(rect.width - rect.height) < 30)) {
-        return {
-          found: true,
-          type: 'img',
-          width: rect.width,
-          height: rect.height,
-          top: rect.top,
-          left: rect.left,
-          dataUrl: src.startsWith('data:') ? src : null,
-        };
-      }
-    }
-
-    // Strategy 3: svg with class containing qr
-    const svgs = Array.from(document.querySelectorAll('svg'));
-    for (const s of svgs) {
-      const cls = (s.className?.baseVal || s.getAttribute('class') || '').toLowerCase();
-      const rect = s.getBoundingClientRect();
-      if (cls.includes('qr') && rect.width >= 100) {
-        return { found: true, type: 'svg', width: rect.width, height: rect.height, top: rect.top, left: rect.left, dataUrl: null };
-      }
-    }
-
-    // Strategy 4: any element with qr in class name
-    const qrEls = Array.from(document.querySelectorAll('[class*="qr" i], [class*="qrcode" i], [class*="scan" i]'));
-    for (const el of qrEls) {
-      const rect = el.getBoundingClientRect();
-      const text = (el.innerText || el.textContent || '').toLowerCase();
-      if (text.includes('continue with')) continue;
-      if (rect.width < 100 || rect.height < 100) continue;
-      return { found: true, type: 'element', width: rect.width, height: rect.height, top: rect.top, left: rect.left, dataUrl: null };
-    }
-
-    return { found: false };
-  }).catch(() => ({ found: false }));
-}
-
-// Pick "best" QR-like screenshot from all tracked screenshots.
-// Heuristic: prefer canvas/svg/qr-element > popup > main > iframe
-function pickBestQrScreenshot() {
-  const order = ['canvas', 'svg', 'element', 'img', 'popup', 'main', 'iframe', 'post-click', 'unknown'];
-  const sorted = [...status.screenshots].sort((a, b) => {
-    const ai = order.indexOf(a.kind);
-    const bi = order.indexOf(b.kind);
-    if (ai !== bi) return ai - bi;
-    return b.size - a.size; // larger first within same kind
+  await new Promise((resolve) => {
+    server.listen(port, HOST, () => resolve());
   });
-  return sorted[0] || null;
-}
 
-async function checkLogin() {
-  tries++;
-  const elapsedMs = Date.now() - startTime;
+  pushHistory(`HTTP dashboard listening on http://${HOST}:${port}/`);
+  pushHistory(`Profile dir: ${userDataDir}`);
+  pushHistory(`Existing profile: ${fs.existsSync(userDataDir) ? 'YES' : 'NO'}`);
+  pushHistory(`Existing cookies.json: ${fs.existsSync(cookiesJsonPath) ? 'YES' : 'NO'}`);
 
-  if (elapsedMs > MAX_WAIT_MS) {
-    logger.warn({ elapsedMs }, `Timeout ${MAX_WAIT_MS / 1000}s. No login detected.`);
-    setStatus('timeout');
-    persistStatus();
-    return 'timeout';
-  }
-
-  try {
-    const activePage = popupPage && !popupPage.isClosed() ? popupPage : page;
-    status.currentUrl = activePage.url();
-
-    // Detect login via cookies + URL change
-    const cookies = await page.cookies();
-    status.cookieCount = cookies.length;
-    const sessionCookie = cookies.find((c) =>
-      /session|token|uid|passport|login|sid|tt_csrf|s_v_web_id/i.test(c.name) && c.value && c.value.length > 10
-    );
-    status.hasSessionCookie = !!sessionCookie;
-
-    const stillOnLogin = /\/login|\/scan-qr-code/i.test(status.currentUrl);
-
-    let avatarFound = false;
-    if (!stillOnLogin) {
-      try {
-        avatarFound = await page.$(
-          '[class*="avatar" i], [data-e2e*="user" i], [data-testid*="user" i], [class*="user-info" i], [class*="header-user" i], [class*="account" i]'
-        ) ? true : false;
-      } catch (_) {}
-    }
-
-    if (sessionCookie && (!stillOnLogin || avatarFound)) {
-      logger.info({ url: status.currentUrl, cookie: sessionCookie?.name, avatarFound }, 'LOGIN SUCCESS detected!');
-      status.loginDetected = true;
-      setStatus('success');
-      persistStatus();
-      return 'success';
-    }
-
-    // Capture screenshots from ALL pages + frames
-    const now = Date.now();
-    if (now - lastScreenshotTime > 1500) {
-      await captureAllScreenshots();
-
-      // Detect QR: scan main page, popup page, AND all frames
-      let qrInfo = null;
-      let qrSource = null;
-
-      // Check main page first
-      const mainQr = await findQrCanvasOrImg(page);
-      if (mainQr?.found) { qrInfo = mainQr; qrSource = 'main'; }
-
-      // Check popup page
-      if (!qrInfo && popupPage && !popupPage.isClosed()) {
-        const popupQr = await findQrCanvasOrImg(popupPage);
-        if (popupQr?.found) { qrInfo = popupQr; qrSource = 'popup'; }
-      }
-
-      // Check each iframe
-      if (!qrInfo) {
-        try {
-          const frames = page.frames();
-          for (let i = 0; i < frames.length; i++) {
-            if (frames[i] === page.mainFrame()) continue;
-            try {
-              const frameQr = await findQrCanvasOrImg(frames[i]);
-              if (frameQr?.found) {
-                qrInfo = frameQr;
-                qrSource = `frame-${i}`;
-                break;
-              }
-            } catch (_) {}
-          }
-        } catch (_) {}
-      }
-
-      // Update phase + QR marker
-      if (qrInfo?.found && !qrFound) {
-        qrFound = true;
-        status.qrDetected = true;
-        setStatus('waiting-login');
-        logger.info({ type: qrInfo.type, source: qrSource, w: Math.round(qrInfo.width), h: Math.round(qrInfo.height), hasDataUrl: !!qrInfo.dataUrl }, 'QR code element detected!');
-      } else if (qrFound && status.currentPhase === 'waiting-qr') {
-        setStatus('waiting-login');
-      }
-
-      // Save best screenshot as qr-latest.png
-      // PRIORITY 1: if QR element has dataUrl (canvas.toDataURL or img src), write that directly.
-      //   This gets EXACT pixels — no clipping artifacts, no timing issues.
-      // PRIORITY 2: if no dataUrl, clip-screenshot the QR element region.
-      // PRIORITY 3: fallback to best screenshot from gallery.
-      let qrSavedThisRound = false;
-      if (qrInfo?.found) {
-        // PRIORITY 1: dataUrl
-        if (qrInfo.dataUrl && qrInfo.dataUrl.startsWith('data:image/png;base64,')) {
-          try {
-            const buf = Buffer.from(qrInfo.dataUrl.split(',')[1], 'base64');
-            fs.writeFileSync(qrLatestPath, buf);
-            qrSavedThisRound = true;
-            if (tries % 8 === 0) {
-              logger.info({ size: buf.length, source: qrSource }, 'QR pixels saved via canvas.toDataURL()');
-            }
-          } catch (e) {
-            logger.warn({ err: e.message }, 'Failed to write QR from dataUrl, falling back to screenshot');
-          }
-        }
-
-        // PRIORITY 2: clip screenshot
-        if (!qrSavedThisRound) {
-          const targetPage = qrSource === 'popup' && popupPage && !popupPage.isClosed() ? popupPage : page;
-          // PRIORITY 2: clip screenshot (with 5s timeout — never hang)
-          const clipBuf = await screenshotWithTimeout(targetPage, {
-            path: qrLatestPath,
-            clip: {
-              x: Math.max(0, qrInfo.left - 40),
-              y: Math.max(0, qrInfo.top - 40),
-              width: qrInfo.width + 80,
-              height: qrInfo.height + 80,
-            },
-          });
-          if (clipBuf !== null) {
-            qrSavedThisRound = true;
-          } else {
-            // fallback: full screenshot
-            const fullBuf = await screenshotWithTimeout(targetPage, { path: qrLatestPath, fullPage: false });
-            if (fullBuf !== null) qrSavedThisRound = true;
-          }
-        }
-      } else if (qrInfo?.blankCanvas) {
-        // Canvas exists but blank — QR not yet rendered. Don't overwrite qr-latest.png
-        // with a blank canvas. Keep previous content (or fall back to popup screenshot).
-        if (!fs.existsSync(qrLatestPath) || fs.statSync(qrLatestPath).size < 1500) {
-          // No QR saved yet, fall through to popup screenshot
-        } else {
-          qrSavedThisRound = true; // keep existing QR
-        }
-      }
-
-      if (!qrSavedThisRound) {
-        // PRIORITY 3: pick best screenshot from gallery (prefer popup > main)
-        const best = pickBestQrScreenshot();
-        if (best && best.path !== qrLatestPath) {
-          try {
-            fs.copyFileSync(best.path, qrLatestPath);
-          } catch (_) {}
-        }
-      }
-
-      lastScreenshotTime = now;
-
-      // Periodic full debug screenshot
-      if (tries % 5 === 0) {
-        const debugPath = path.join(screenshotDir, `debug-${tries}.png`);
-        await screenshotWithTimeout(activePage, { path: debugPath, fullPage: false });
-      }
-    }
-
-    if (tries % 6 === 0) {
-      logger.info(
-        { tries, elapsedS: Math.round(elapsedMs / 1000), url: status.currentUrl, qrFound, hasSessionCookie: !!sessionCookie, popupAlive: popupPage && !popupPage.isClosed(), pages: status.pageCount, frames: status.frameCount },
-        'Waiting for login...'
-      );
-    }
-
-    persistStatus();
-  } catch (e) {
-    logger.warn({ err: e.message }, 'Polling error');
-    status.lastError = e.message;
-  }
-
-  return 'continue';
-}
-
-const pollLoop = async () => {
-  while (true) {
-    const result = await checkLogin();
-    if (result === 'success') {
-      await new Promise((r) => setTimeout(r, 2000));
-      try { await browser.close(); } catch (_) {}
-      logger.info(`✓ Session saved to ${userDataDir}`);
-      logger.info('Set CAPCUT_USER_DATA_DIR=./.capcut-profile di .env untuk reuse session ini.');
-      // Keep HTTP server alive for 10 more seconds supaya user bisa lihat success message
-      setTimeout(() => { httpServer.close(); process.exit(0); }, 10000);
-      return;
-    }
-    if (result === 'timeout') {
-      try { await browser.close(); } catch (_) {}
-      setTimeout(() => { httpServer.close(); process.exit(1); }, 10000);
-      return;
-    }
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-  }
-};
-
-pollLoop().catch((e) => {
-  logger.error({ err: e.message }, 'Fatal error in poll loop');
-  status.lastError = e.message;
-  setStatus('error');
-  persistStatus();
-  try { browser?.close(); } catch (_) {}
-  // Keep HTTP server alive
-  setInterval(persistStatus, 2000);
-});
-
-} // end mainFlow
-
-// Graceful shutdown
-const shutdown = async (sig) => {
-  logger.info({ sig }, 'Received signal, closing browser...');
-  if (browser) { try { await browser.close(); } catch (_) {} }
-  httpServer.close();
-  process.exit(0);
-};
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+  console.log('');
+  console.log('============================================================');
+  console.log('  CapCut Manual Login (cookie paste mode)');
+  console.log('============================================================');
+  console.log(`  Dashboard:  http://127.0.0.1:${port}/`);
+  console.log(`  Profile:    ${userDataDir}`);
+  console.log(`  cookies.json: ${cookiesJsonPath}`);
+  console.log('');
+  console.log('  Steps:');
+  console.log('    1. Open the dashboard URL in your browser (via SSH tunnel if remote)');
+  console.log('    2. Login at https://www.capcut.com/login in another tab');
+  console.log('    3. Use Cookie-Editor extension to export cookies as JSON');
+  console.log('    4. Paste JSON into the dashboard textarea');
+  console.log('    5. Click "Save & Validate"');
+  console.log('');
+  console.log('  SSH tunnel example:');
+  console.log(`    ssh -L ${port}:localhost:${port} root@<your-server>`);
+  console.log('============================================================');
+  console.log('');
+})();
