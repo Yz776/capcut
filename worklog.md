@@ -77,3 +77,29 @@ Stage Summary:
 - Lalu: bash scripts/install-deps.sh → npm install → npm run login:manual
 - SSH tunnel di laptop: ssh -L 3001:localhost:3001 root@sakura.proxy.rlwy.net -p 39551
 - Browser lokal: http://localhost:3001/ → scan QR pake CapCut HP
+
+---
+Task ID: manual-login-rewrite-3
+Agent: main (Super Z)
+Task: User minta login diubah jadi manual (user yg login ke link yg dikasih program), bukan otomatis minta QR
+
+Work Log:
+- Rancang ulang arsitektur login: ganti QR-extraction (yg tidak pernah reliable di headless server) dengan cookie-paste flow
+- Tulis ulang scripts/manual-login.js (~900 lines): HTTP dashboard di port 3002 dengan 3 metode input cookies (Cookie-Editor JSON, DevTools manual, console bookmarklet)
+- Buat scripts/validate-cookies.js (~260 lines): subprocess validator yg launch headless Chromium, set cookies, navigasi ke https://www.capcut.com/my-cloud/material (login-gated), check login state via URL redirect + DOM probe + cookie inspection
+- Validator jalan di subprocess terpisah supaya HTTP server tetap alive walau puppeteer crash
+- Cookie parser handle 3 format: JSON array, cookie header string, Netscape cookies.txt
+- Test lokal: 7/7 parser unit tests pass, multiple validation cycles berhasil, bad input ditolak dengan clean error
+- Test lokal: server tetap ALIVE setelah multiple validation cycles (verifikasi subprocess isolation works)
+- Upload ke server produksi (sakura.proxy.rlwy.net:39551) via scp-upload-prod.py (base64-encoded SSH upload)
+- Kill 4 zombie manual-login processes lama di server
+- Start server baru: PID 375305, listening on 0.0.0.0:3002
+- Verify: status endpoint returns JSON, dashboard returns HTML, 1 process running
+
+Stage Summary:
+- New flow: user buka https://www.capcut.com/login di browser mereka sendiri → login pake metode apapun (QR/email/Google) → export cookies via Cookie-Editor extension → paste ke dashboard → click Save & Validate → program launch headless browser untuk verify → save to .capcut-profile + cookies.json
+- Server production saat ini RUNNING di port 3002, siap dipakai
+- User perlu SSH tunnel: ssh -L 3002:localhost:3002 root@sakura.proxy.rlwy.net -p 39551
+- Lalu buka http://127.0.0.1:3002/ di browser lokal
+- Files committed: scripts/manual-login.js (rewritten), scripts/validate-cookies.js (new)
+- Files uploaded to production: /root/capcut/scripts/manual-login.js (35381 bytes), /root/capcut/scripts/validate-cookies.js (10916 bytes)
