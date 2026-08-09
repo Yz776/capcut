@@ -24,5 +24,8 @@
     "nanoid": "^5.0.9",
     "formidable": "^3.5.2",
     "pino": "^9.5.0"
+  },
+  "allowScripts": {
+    "puppeteer@23.11.1": true
   }
 }

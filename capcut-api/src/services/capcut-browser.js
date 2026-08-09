@@ -28,19 +28,28 @@ import { logger } from '../utils/logger.js';
 
 const SELECTORS = {
   // login
-  loginButton: 'header a[href*="login"], header button:has-text("Log in"), header button:has-text("登入"), header button:has-text("登錄")',
+  loginButton: 'header a[href*="login"]',
   emailInput: 'input[type="email"], input[name="email"], input[placeholder*="mail" i]',
   passwordInput: 'input[type="password"], input[name="password"]',
-  submitLogin: 'button[type="submit"], button:has-text("Log in"), button:has-text("登入"), button:has-text("登錄")',
+  submitLogin: 'button[type="submit"]',
   loginSuccessIndicator: '[class*="avatar" i], [data-testid*="user" i]',
 
-  // Editor
-  editorReady: '[class*="editor" i], canvas, [class*="track" i]',
+  // Editor (updated 2026-08 berdasarkan inspect-editor.js)
+  editorReady: 'canvas, [class*="track" i], [class*="editor-canvas" i]',
+  // Export button di CapCut pakai class khusus "export-video-btn"
+  // Tunggu sampai TIDAK ada class "lv-btn-disabled"
+  renderButton: 'button.export-video-btn',
+  renderButtonActive: 'button.export-video-btn:not(.lv-btn-disabled)',
   uploadButton: 'button:has-text("Upload"), [class*="upload" i] button',
   fileInput: 'input[type="file"]',
-  renderButton: 'button:has-text("Export"), button:has-text("Render"), button:has-text("下載"), button:has-text("匯出")',
   renderProgress: '[class*="progress" i], [role="progressbar"]',
-  renderDone: 'a[download], button:has-text("Download"), [class*="download" i] a[href]',
+  renderDone: 'a[download], a[href*=".mp4"], [class*="download" i] a[href]',
+
+  // Modals (CapCut suka nampilin modal promo yang nge-block UI)
+  modalClose: '.lv-modal-close-icon, [class*="modal-close" i], [aria-label*="close" i]',
+  modalMask: '.lv-modal-mask',
+  // Modal sign-in yang muncul kalau session editor tidak valid
+  signInModal: '.lv_sign_in_panel_wide_base_page, [class*="sign_in_panel" i]',
 };
 
 export class CapCutBrowser {
@@ -105,27 +114,69 @@ export class CapCutBrowser {
   }
 
   /**
-   * Login CapCut pakai email/password.
-   * Skip kalau sudah login (cek avatar).
+   * Login CapCut.
+   * Strategi:
+   *   1. Kalau CAPCUT_USER_DATA_DIR di-set → buka homepage, cek apakah session masih valid (avatar detected).
+   *      Kalau valid → langsung skip login.
+   *      Kalau tidak valid → throw error "Session expired, run npm run login:manual lagi".
+   *   2. Kalau CAPCUT_EMAIL + CAPCUT_PASSWORD di-set → login via form email/password.
+   *   3. Kalau keduanya kosong → throw error.
    */
   async login() {
-    if (!config.capcut.email || !config.capcut.password) {
-      throw new Error('CAPCUT_EMAIL/CAPCUT_PASSWORD not set in env. Cannot login. Alternative: set CAPCUT_USER_DATA_DIR after running npm run login:manual');
+    const hasUserDataDir = !!config.browser.userDataDir;
+    const hasEmailCreds = config.capcut.email && config.capcut.password;
+
+    if (!hasUserDataDir && !hasEmailCreds) {
+      throw new Error(
+        'Tidak ada metode login tersedia. Set CAPCUT_USER_DATA_DIR (hasil npm run login:manual) ' +
+        'ATAU set CAPCUT_EMAIL + CAPCUT_PASSWORD di .env'
+      );
     }
 
-    logger.info({ email: config.capcut.email }, 'Logging into CapCut...');
+    logger.info({
+      mode: hasUserDataDir ? 'persistent-session' : 'email-password',
+      userDataDir: config.browser.userDataDir || null,
+    }, 'Logging into CapCut...');
+
     await this.page.goto(config.capcut.baseUrl, { waitUntil: 'domcontentloaded' });
-    await sleep(2000);
+    await sleep(3000);
 
-    // Cek apakah sudah login (persistent session)
-    try {
-      await this.page.waitForSelector(SELECTORS.loginSuccessIndicator, { timeout: 5000 });
-      logger.info('Already logged in (avatar detected)');
-      this._loggedIn = true;
-      return;
-    } catch (_) {}
+    // === Strategi 1: Persistent session ===
+    if (hasUserDataDir) {
+      try {
+        await this.page.waitForSelector(SELECTORS.loginSuccessIndicator, { timeout: 8000 });
+        logger.info('Persistent session valid (avatar detected). Skipping login form.');
+        this._loggedIn = true;
+        return;
+      } catch (_) {
+        // Avatar tidak ketemu. Cek apakah di-redirect ke /login
+        const currentUrl = this.page.url();
+        if (/\/login/.test(currentUrl)) {
+          throw new Error(
+            'Persistent session expired. Jalankan ulang: npm run login:manual lalu scan QR baru.'
+          );
+        }
+        // Mungkin avatar selectornya beda. Cek via cookies.
+        const cookies = await this.browser.cookies();
+        const sessionCookies = cookies.filter(c =>
+          /session|token|uid|passport|sid/i.test(c.name)
+        );
+        if (sessionCookies.length > 0) {
+          logger.info(
+            { cookieNames: sessionCookies.map(c => c.name) },
+            'Session cookies ditemukan, mengasumsikan sudah login'
+          );
+          this._loggedIn = true;
+          return;
+        }
+        throw new Error(
+          'Persistent session tidak valid (tidak ada cookie session). ' +
+          'Jalankan ulang: npm run login:manual'
+        );
+      }
+    }
 
-    // Klik login button
+    // === Strategi 2: Email/password ===
     await this.page.goto(`${config.capcut.baseUrl}/login`, { waitUntil: 'domcontentloaded' });
     await sleep(2000);
 
@@ -149,12 +200,84 @@ export class CapCutBrowser {
     try {
       await this.page.waitForSelector(SELECTORS.loginSuccessIndicator, { timeout: 30000 });
       this._loggedIn = true;
-      logger.info('Login success');
+      logger.info('Login success (email/password)');
     } catch (e) {
       const bodyText = await this.page.evaluate(() => document.body.innerText.slice(0, 500));
       throw new Error(`Login failed. Page text snippet: ${bodyText.slice(0, 200)}`);
     }
     await sleep(2000);
+  }
+
+  /**
+   * Tutup semua modal yang nge-block editor (promo, sign-in, dll).
+   * CapCut sering banget munculin modal "Dreamina", "Subscribe", dll.
+   */
+  async _closeModals() {
+    let closedCount = 0;
+    for (let i = 0; i < 5; i++) {
+      // Klik tombol close
+      try {
+        const closeBtn = await this.page.$(SELECTORS.modalClose);
+        if (closeBtn) {
+          await closeBtn.click();
+          closedCount++;
+          await sleep(500);
+          continue;
+        }
+      } catch (_) {}
+
+      // Klik modal mask (area gelap di luar modal)
+      try {
+        const mask = await this.page.$(SELECTORS.modalMask);
+        if (mask) {
+          await mask.evaluate(el => el.click());
+          closedCount++;
+          await sleep(500);
+          continue;
+        }
+      } catch (_) {}
+
+      // Press Escape (seringkali tutup modal)
+      try {
+        await this.page.keyboard.press('Escape');
+        await sleep(300);
+      } catch (_) {}
+
+      // Cek apakah masih ada modal visible
+      const stillVisible = await this.page.evaluate(() => {
+        const modals = document.querySelectorAll('.lv-modal-mask, .lv-modal-wrapper');
+        for (const m of modals) {
+          if (m.offsetParent !== null && getComputedStyle(m).display !== 'none') return true;
+        }
+        return false;
+      });
+      if (!stillVisible) break;
+    }
+    if (closedCount > 0) {
+      logger.info({ closed: closedCount }, 'Closed blocking modals');
+    }
+    return closedCount;
+  }
+
+  /**
+   * Cek apakah sign-in modal muncul di editor.
+   * Kalau iya, berarti session editor tidak valid — perlu re-login.
+   */
+  async _checkEditorSignInModal() {
+    try {
+      const signIn = await this.page.$(SELECTORS.signInModal);
+      if (signIn) {
+        const visible = await signIn.evaluate(el => el.offsetParent !== null);
+        if (visible) {
+          throw new Error(
+            'Editor menampilkan sign-in modal walaupun passport cookie ada. ' +
+            'Session editor tidak lengkap — coba login ulang: npm run login:manual'
+          );
+        }
+      }
+    } catch (e) {
+      if (e.message.includes('sign-in modal')) throw e;
+    }
   }
 
   /**
@@ -188,22 +311,31 @@ export class CapCutBrowser {
       throw new Error('Not logged in — redirected to login page. Call login() first.');
     }
 
-    progress(20, 'Waiting editor SPA to load (heavy)');
-    await sleep(8000);
+    progress(15, 'Waiting editor SPA to load (heavy)');
+    await sleep(15000); // kasih waktu buat WebGL init
+
+    // Tutup modal promo yang sering nge-block editor
+    progress(18, 'Closing blocking modals');
+    await this._closeModals();
+
+    // Cek apakah sign-in modal muncul = session editor tidak valid
+    await this._checkEditorSignInModal();
+
     try {
-      await this.page.waitForSelector(SELECTORS.editorReady, { timeout: 90000 });
+      await this.page.waitForSelector(SELECTORS.editorReady, { timeout: 60000 });
     } catch (_) {
       logger.warn('Editor ready selector not found, continuing anyway');
     }
 
-    progress(35, 'Editor ready, uploading images');
+    progress(30, 'Editor ready, uploading images');
 
     // Upload images via file input
     let fileInput = await this.page.$(SELECTORS.fileInput);
     if (!fileInput) {
       try {
         await this.page.click(SELECTORS.uploadButton);
-        await sleep(1000);
+        await sleep(1500);
+        await this._closeModals();
         fileInput = await this.page.$(SELECTORS.fileInput);
       } catch (e) {
         logger.warn({ err: e.message }, 'Cannot find upload trigger');
@@ -214,20 +346,39 @@ export class CapCutBrowser {
     }
 
     await fileInput.uploadFile(...imagePaths);
-    progress(50, 'Images uploaded, waiting for editor to apply');
-    await sleep(10000);
+    progress(45, 'Images uploaded, waiting for editor to apply');
+    await sleep(15000); // kasih waktu buat process images & apply ke timeline
 
-    // Klik Export / Render
-    progress(65, 'Triggering render/export');
-    await this.page.waitForSelector(SELECTORS.renderButton, { timeout: 30000 });
-    await this.page.click(SELECTORS.renderButton);
+    // Tutup modal yang mungkin muncul setelah upload (e.g. "Image size too large" warning)
+    await this._closeModals();
+
+    // Klik Export / Render — tunggu button AKTIF (tidak disabled)
+    progress(60, 'Triggering render/export');
+    try {
+      // Tunggu sampai button Export tidak disabled (images sudah applied)
+      await this.page.waitForSelector(SELECTORS.renderButtonActive, { timeout: 30000 });
+    } catch (_) {
+      logger.warn('Export button masih disabled atau tidak ketemu. Coba click paksa...');
+    }
+    const exportBtn = await this.page.$(SELECTORS.renderButton);
+    if (!exportBtn) {
+      throw new Error('Export button tidak ditemukan di editor. UI CapCut mungkin berubah.');
+    }
+    await exportBtn.click();
     await sleep(2000);
 
-    // Pilih kualitas lalu confirm
+    // Setelah klik Export, mungkin muncul dialog export settings → klik Export/Confirm lagi
     try {
-      const exportBtn = await this.page.$('button:has-text("Export"), button:has-text("Confirm"), button:has-text("Render"), button:has-text("匯出")');
-      if (exportBtn) await exportBtn.click();
+      const confirmBtn = await this.page.$('button.export-video-btn, button:has-text("Export"), button:has-text("Confirm"), button:has-text("Render")');
+      if (confirmBtn) {
+        const disabled = await confirmBtn.evaluate(el => el.classList.contains('lv-btn-disabled') || el.disabled);
+        if (!disabled) {
+          await confirmBtn.click();
+          logger.info('Clicked confirm export button');
+        }
+      }
     } catch (_) {}
+    await this._closeModals();
 
     // Tunggu progress render selesai
     progress(75, 'Rendering in progress');

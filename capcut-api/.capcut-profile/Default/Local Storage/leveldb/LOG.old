@@ -1,3 +1,13 @@
-2026/08/09-07:31:31.453 24e2 Reusing MANIFEST /home/z/my-project/capcut-api/.capcut-profile/Default/Local Storage/leveldb/MANIFEST-000001
-2026/08/09-07:31:31.457 24e2 Recovering log #9
-2026/08/09-07:31:31.457 24e2 Reusing old log /home/z/my-project/capcut-api/.capcut-profile/Default/Local Storage/leveldb/000009.log 
+2026/08/09-10:13:33.767 11ed Reusing MANIFEST /home/z/my-project/capcut-api/.capcut-profile/Default/Local Storage/leveldb/MANIFEST-000001
+2026/08/09-10:13:33.772 11ed Recovering log #11
+2026/08/09-10:13:33.772 11ed Level-0 table #11: started
+2026/08/09-10:13:33.773 11ed Level-0 table #11: 25613 bytes OK
+2026/08/09-10:13:33.774 11ed Delete type=0 #11
+2026/08/09-10:13:33.775 11ed Compacting 4@0 + 0@1 files
+2026/08/09-10:13:33.804 11ed Generated table #13@0: 69 keys, 928149 bytes
+2026/08/09-10:13:33.804 11ed Compacted 4@0 + 0@1 files => 928149 bytes
+2026/08/09-10:13:33.804 11ed compacted to: files[ 0 1 0 0 0 0 0 ]
+2026/08/09-10:13:33.804 11ed Delete type=2 #6
+2026/08/09-10:13:33.804 11ed Delete type=2 #9
+2026/08/09-10:13:33.804 11ed Delete type=2 #3
+2026/08/09-10:13:33.804 11ed Delete type=2 #11
