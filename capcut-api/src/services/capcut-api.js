@@ -238,6 +238,8 @@ function normalizeTemplate(t) {
     videoRatio: t.video_ratio,
     author: t.author,
     detailUrl: `https://www.capcut.com/zh-tw/template-detail/x/${t.template_id}`,
+    // IMPORTANT: editor-template route TIDAK menerima prefix region (akan 404).
+    // Pakai root domain langsung.
     editorUrl: `https://www.capcut.com/editor-template?create_id=${t.template_id}`,
     structuredData: typeof t.structured_data === 'string'
       ? safeJsonParse(t.structured_data)

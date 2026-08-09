@@ -31,6 +31,9 @@ export const config = {
     navTimeout: int(process.env.NAV_TIMEOUT, 60000),
     renderTimeout: int(process.env.RENDER_TIMEOUT, 300000),
     userDataDir: process.env.CAPCUT_USER_DATA_DIR || '',
+    // Set CAPCUT_EDITOR_ENABLED=true untuk coba render via CapCut editor (butuh session login lengkap).
+    // Default false: langsung pakai ffmpeg composer (lebih reliable tanpa full auth).
+    editorEnabled: bool(process.env.CAPCUT_EDITOR_ENABLED, false),
   },
 
   capcut: {

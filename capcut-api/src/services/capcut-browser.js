@@ -298,17 +298,29 @@ export class CapCutBrowser {
     const editorUrl = template.editorUrl ||
       `${config.capcut.baseUrl}/editor-template?create_id=${template.id}`;
 
+    // ⚠️ IMPORTANT: CapCut editor-template route TIDAK menerima prefix region.
+    // Pattern lama: /zh-tw/editor-template?create_id=X → 404 Not Found
+    // Pattern baru: /editor-template?create_id=X → 200 OK
+    // Sanitize editorUrl untuk hapus prefix region.
+    const sanitizedEditorUrl = editorUrl.replace(
+      /^(https?:\/\/[^/]+)\/[a-z]{2}(?:-[a-z]{2})?\//i,
+      '$1/'
+    );
+
     const progress = (pct, msg) => {
       logger.info({ pct, msg }, 'render progress');
       onProgress?.(pct, msg);
     };
 
     progress(5, 'Opening editor with template');
-    await this.page.goto(editorUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await this.page.goto(sanitizedEditorUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // Cek apakah di-redirect ke login
+    // Cek apakah di-redirect ke login atau 404
     if (/\/login/.test(this.page.url())) {
       throw new Error('Not logged in — redirected to login page. Call login() first.');
+    }
+    if (await this.page.title().then(t => /404/i.test(t))) {
+      throw new Error(`Editor URL returned 404: ${sanitizedEditorUrl}. Template mungkin tidak valid atau URL pattern berubah.`);
     }
 
     progress(15, 'Waiting editor SPA to load (heavy)');
