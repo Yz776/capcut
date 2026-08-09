@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>CapCut Login Dashboard</title>
+<meta http-equiv="refresh" content="3">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0f0f10;color:#eee;font-family:system-ui,-apple-system,sans-serif;padding:20px;min-height:100vh}
+  .wrap{max-width:1100px;margin:0 auto}
+  h1{font-size:22px;margin-bottom:4px;color:#fff}
+  .sub{opacity:.6;font-size:13px;margin-bottom:20px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .card{background:#1a1a1e;border:1px solid #2a2a2e;border-radius:10px;padding:14px 16px}
+  .card h2{font-size:14px;margin-bottom:10px;color:#9ca3af;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+  .kv{display:flex;justify-content:space-between;padding:4px 0;font-size:13px;border-bottom:1px solid #232327}
+  .kv:last-child{border-bottom:none}
+  .kv .k{opacity:.6}
+  .kv .v{font-family:monospace;color:#e5e7eb}
+  .phase{font-size:15px;padding:10px 14px;border-radius:8px;background:#1f2937;color:#93c5fd;margin-bottom:16px;border-left:3px solid #3b82f6}
+  .phase.success{background:#1a3a1a;color:#7fff7f;border-left-color:#22c55e}
+  .phase.timeout{background:#3a1a1a;color:#ff7f7f;border-left-color:#ef4444}
+  .phase.error{background:#3a1a1a;color:#ff7f7f;border-left-color:#ef4444}
+  .qr-wrap{background:#fff;padding:12px;border-radius:10px;display:inline-block;text-align:center;width:100%}
+  .qr-wrap img{display:block;max-width:100%;height:auto;margin:0 auto;image-rendering:pixelated;min-height:200px}
+  .logs{background:#0a0a0c;border:1px solid #1f1f23;border-radius:8px;padding:10px;max-height:280px;overflow-y:auto;font-family:monospace;font-size:11px;line-height:1.5}
+  .log-line{padding:1px 0;word-break:break-all;white-space:pre-wrap}
+  .log-line.info{color:#cbd5e1}
+  .log-line.warn{color:#fbbf24}
+  .log-line.error{color:#f87171}
+  .log-ts{opacity:.4;margin-right:6px}
+  .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-top:8px}
+  .thumb{background:#0a0a0c;border:1px solid #1f1f23;border-radius:6px;overflow:hidden}
+  .thumb img{display:block;width:100%;height:auto;min-height:80px}
+  .thumb .label{padding:4px 6px;font-size:10px;font-family:monospace;color:#9ca3af;border-top:1px solid #1f1f23;word-break:break-all}
+  .empty{opacity:.4;font-size:12px;font-style:italic;padding:20px;text-align:center}
+  .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-left:6px}
+  .badge.on{background:#166534;color:#86efac}
+  .badge.off{background:#374151;color:#9ca3af}
+</style></head>
+<body><div class="wrap">
+<h1>CapCut Login Dashboard</h1>
+<div class="sub">Auto-refresh every 3s · Port 3704 · Uptime 26s</div>
+
+<div class="phase waiting-login">QR ready — waiting for you to scan with CapCut mobile app</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>QR Code (scan this with CapCut mobile app)</h2>
+    <div class="qr-wrap">
+      <img src="/qr?t=1786278896306" alt="QR code">
+    </div>
+    <div style="margin-top:8px;font-size:11px;opacity:.6;text-align:center">
+      Buka CapCut di HP → Profile (tab kanan) → icon Scan di kanan atas
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Status</h2>
+    <div class="kv"><span class="k">Phase</span><span class="v">waiting-login</span></div>
+    <div class="kv"><span class="k">Browser launched</span><span class="v">✓</span></div>
+    <div class="kv"><span class="k">Login page loaded</span><span class="v">✓</span></div>
+    <div class="kv"><span class="k">Mobile button found</span><span class="v">✓</span></div>
+    <div class="kv"><span class="k">Button clicked</span><span class="v">✓</span></div>
+    <div class="kv"><span class="k">Popup opened</span><span class="v">✓</span></div>
+    <div class="kv"><span class="k">QR detected</span><span class="v">✓</span></div>
+    <div class="kv"><span class="k">Login detected</span><span class="v">✗</span></div>
+    <div class="kv"><span class="k">Page count</span><span class="v">2</span></div>
+    <div class="kv"><span class="k">Frame count</span><span class="v">2</span></div>
+    <div class="kv"><span class="k">Iframe count</span><span class="v">1</span></div>
+    <div class="kv"><span class="k">Canvas count</span><span class="v">0</span></div>
+    <div class="kv"><span class="k">Dialog count</span><span class="v">0</span></div>
+    <div class="kv"><span class="k">Cookies</span><span class="v">24</span></div>
+    <div class="kv"><span class="k">Session cookie</span><span class="v">✓</span></div>
+    <div class="kv"><span class="k">Current URL</span><span class="v" style="font-size:10px;text-align:right;max-width:60%;word-break:break-all">https://www.capcut.com/scan-qr-code?enter_from=https%3A%2F%2Fwww.capcut.com%2Ftemplates&amp;scan_type=login</span></div>
+    <div class="kv"><span class="k">Popup URL</span><span class="v" style="font-size:10px;text-align:right;max-width:60%;word-break:break-all">https://www.capcut.com/scan-qr-code?enter_from=https%3A%2F%2Fwww.capcut.com%2Ftemplates&amp;scan_type=login</span></div>
+    
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+  <h2>Screenshots gallery (all pages + iframes)</h2>
+  
+  <div class="gallery">
+    
+      <div class="thumb">
+        <img src="/shot?name=popup.png" alt="popup.png">
+        <div class="label">popup.png<br>45KB · popup</div>
+      </div>
+    
+      <div class="thumb">
+        <img src="/shot?name=after-click.png" alt="after-click.png">
+        <div class="label">after-click.png<br>316KB · post-click</div>
+      </div>
+    
+      <div class="thumb">
+        <img src="/shot?name=main-page.png" alt="main-page.png">
+        <div class="label">main-page.png<br>194KB · main</div>
+      </div>
+    
+  </div>
+</div>
+
+<div class="card">
+  <h2>Recent logs</h2>
+  <div class="logs">
+    
+        <div class="log-line info"><span class="log-ts">12:34:53</span>[info] QR code element detected! {&quot;type&quot;:&quot;canvas&quot;,&quot;source&quot;:&quot;popup&quot;,&quot;w&quot;:220,&quot;h&quot;:220}</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:46</span>[info] Popup/new tab detected, tracking it for QR code {&quot;url&quot;:&quot;https://www.capcut.com/scan-qr-code?enter_from=https%3A%2F%2Fwww.capcut.com%2Ftemplates&amp;scan_type=login&quot;}</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:45</span>[info] New browser target created {&quot;type&quot;:&quot;page&quot;,&quot;url&quot;:&quot;https://www.capcut.com/scan-qr-code?enter_from=https%3A%2F%2Fwww.capcut.com%2Ftemplates&amp;scan_type=lo&quot;}</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:45</span>[info] Waiting for QR code modal to render...</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:45</span>[info] Real mouse click sent to button center {&quot;x&quot;:1080,&quot;y&quot;:579.5}</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:43</span>[info] Found CapCut Mobile button, clicking... {&quot;attempt&quot;:0,&quot;found&quot;:true,&quot;text&quot;:&quot;continue with capcut mobile&quot;,&quot;tag&quot;:&quot;div&quot;,&quot;width&quot;:340,&quot;height&quot;:44,&quot;top&quot;:557.5,&quot;left&quot;:910}</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:43</span>[info] Looking for &quot;Continue with CapCut Mobile&quot; button...</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:40</span>[info] Page loaded {&quot;url&quot;:&quot;https://www.capcut.com/login?enter_from=https%3A%2F%2Fwww.capcut.com%2Ftemplates&quot;}</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:39</span>[info] New browser target created {&quot;type&quot;:&quot;other&quot;,&quot;url&quot;:&quot;&quot;}</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:39</span>[info] New browser target created {&quot;type&quot;:&quot;other&quot;,&quot;url&quot;:&quot;&quot;}</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:31</span>[info] Opening CapCut login page...</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:31</span>[info] Chromium launched successfully</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:30</span>[info] ─────────────────────────</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:30</span>[info] 4. Script akan auto-detect login &amp; save session ke /home/z/my-project/capcut-api/.capcut-profile</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:30</span>[info]      Buka CapCut di HP → Profile (tab kanan) → icon Scan di kanan atas</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:30</span>[info] 3. Tunggu sampai QR code muncul di dashboard. Scan pake aplikasi CapCut di HP:</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:30</span>[info] 2. Di browser lokal, buka: http://localhost:3704/</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:30</span>[info]      ssh -L 3704:localhost:3704 &lt;user&gt;@&lt;server-host&gt; -p &lt;ssh-port&gt;</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:30</span>[info] 1. Di laptop, buka SSH tunnel ke server ini:</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:30</span>[info] ──── INSTRUKSI LOGIN ────</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:30</span>[info] HTTP dashboard listening on http://0.0.0.0:3704/</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:30</span>[info] Launching Chromium…</div>
+      
+        <div class="log-line info"><span class="log-ts">12:34:30</span>[info] Manual login mode (headless Chromium + HTTP QR viewer) {&quot;userDataDir&quot;:&quot;/home/z/my-project/capcut-api/.capcut-profile&quot;,&quot;hasDisplay&quot;:false,&quot;headless&quot;:true,&quot;httpPort&quot;:3704}</div>
+      
+  </div>
+</div>
+
+</div></body></html>
