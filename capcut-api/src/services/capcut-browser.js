@@ -113,6 +113,8 @@ export class CapCutBrowser {
         '--mute-audio',
         '--no-first-run',
         '--no-default-browser-check',
+        // Remote debugging — allows live inspection via puppeteer.connect() if a job hangs
+        '--remote-debugging-port=9222',
       ],
     };
 
@@ -256,48 +258,83 @@ export class CapCutBrowser {
    * CapCut sering banget munculin modal "Dreamina", "Subscribe", dll.
    */
   async _closeModals() {
+    const withTimeout = (promise, ms, label) =>
+      Promise.race([
+        promise,
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timeout ${ms}ms`)), ms)),
+      ]);
+
     let closedCount = 0;
+    let lastStillVisible = false;
+    let stuckModals = [];
     for (let i = 0; i < 5; i++) {
-      // Klik tombol close
+      // Klik tombol close (timeout 3s each)
       try {
-        const closeBtn = await this.page.$(SELECTORS.modalClose);
+        const closeBtn = await withTimeout(this.page.$(SELECTORS.modalClose), 3000, 'modalClose');
         if (closeBtn) {
-          await closeBtn.click();
+          await withTimeout(closeBtn.click(), 3000, 'closeBtn.click');
           closedCount++;
           await sleep(500);
           continue;
         }
       } catch (_) {}
 
-      // Klik modal mask (area gelap di luar modal)
+      // Klik modal mask
       try {
-        const mask = await this.page.$(SELECTORS.modalMask);
+        const mask = await withTimeout(this.page.$(SELECTORS.modalMask), 3000, 'modalMask');
         if (mask) {
-          await mask.evaluate(el => el.click());
+          await withTimeout(mask.evaluate(el => el.click()), 3000, 'mask.click');
           closedCount++;
           await sleep(500);
           continue;
         }
       } catch (_) {}
 
-      // Press Escape (seringkali tutup modal)
+      // Press Escape
       try {
-        await this.page.keyboard.press('Escape');
+        await withTimeout(this.page.keyboard.press('Escape'), 3000, 'Escape');
         await sleep(300);
       } catch (_) {}
 
-      // Cek apakah masih ada modal visible
-      const stillVisible = await this.page.evaluate(() => {
-        const modals = document.querySelectorAll('.lv-modal-mask, .lv-modal-wrapper');
-        for (const m of modals) {
-          if (m.offsetParent !== null && getComputedStyle(m).display !== 'none') return true;
-        }
-        return false;
-      });
-      if (!stillVisible) break;
+      // Cek apakah masih ada modal visible (timeout 4s)
+      const probe = await withTimeout(
+        this.page.evaluate(() => {
+          const out = { stillVisible: false, modals: [] };
+          const modals = document.querySelectorAll('.lv-modal-mask, .lv-modal-wrapper, [class*="modal" i], [class*="dialog" i]');
+          for (const m of modals) {
+            if (m.offsetParent !== null && getComputedStyle(m).display !== 'none') {
+              out.stillVisible = true;
+              out.modals.push({
+                cls: (m.className || '').toString().slice(0, 100),
+                text: (m.innerText || '').slice(0, 300),
+              });
+              if (out.modals.length >= 5) break;
+            }
+          }
+          return out;
+        }),
+        4000,
+        'evaluate'
+      ).catch(() => ({ stillVisible: false, modals: [] }));
+      lastStillVisible = probe.stillVisible;
+      stuckModals = probe.modals || [];
+      if (!probe.stillVisible) break;
     }
     if (closedCount > 0) {
       logger.info({ closed: closedCount }, 'Closed blocking modals');
+    }
+    // Diagnostic: if modals still visible after 5 attempts, save screenshot + dump modal info
+    if (lastStillVisible) {
+      try {
+        const tmpDir = path.resolve(process.cwd(), 'tmp');
+        fs.mkdirSync(tmpDir, { recursive: true });
+        const ts = Date.now();
+        const shotPath = path.join(tmpDir, `modal-stuck-${ts}.png`);
+        await withTimeout(this.page.screenshot({ path: shotPath, fullPage: false }), 5000, 'screenshot');
+        logger.warn({ closedCount, stuckModals, screenshot: shotPath, url: this.page.url() }, 'Modals still visible after 5 close attempts');
+      } catch (e) {
+        logger.warn({ closedCount, stuckModals, error: e.message, url: this.page.url() }, 'Modals stuck + screenshot failed');
+      }
     }
     return closedCount;
   }

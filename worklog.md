@@ -126,3 +126,28 @@ Stage Summary:
 - User ID: 7671929666977923090 (dari redirect URL)
 - Bug fix di validator: :has-text() pseudo-selector dihapus, semua puppeteer operations sekarang punya timeout
 - Production server state: API ready untuk receive render jobs
+
+---
+Task ID: test-render-5
+Agent: main (Super Z)
+Task: Test render video end-to-end di production
+
+Work Log:
+- Submit job render pertama: template "Frame Collage Trend" (7582506944926289157) + 2 image URLs
+- Job berjalan sampai 18% "Closing blocking modals" lalu stuck 16+ menit
+- Investigasi: tambah --remote-debugging-port=9222 ke chrome args untuk live debug
+- Tambah diagnostic di _closeModals(): jika modal masih visible setelah 5 attempt, save screenshot + log modal info
+- Upload fix, restart API (PID 3801), submit job baru OL9Igk9b8L3X
+- Job tetap stuck di 18% walaupun denganTimeout sudah di setiap operation
+- Investigasi lebih dalam: coba puppeteer.connect() ke chrome via 9222 → berhasil connect tapi browser.pages() nge-hang 30s+ (CDP protocol deadlock)
+- Cek memory: 257GB total, 74GB available — BUKAN OOM
+- Cek chrome process: GPU process pakai `--use-angle=swiftshader-webgl` (software renderer)
+- ROOT CAUSE DITEMUKAN: CapCut editor SPA butuh hardware-accelerated WebGL. Di server headless tanpa GPU, swiftshader (software WebGL) terlalu lambat untuk render editor CapCut yang berat, menyebabkan chrome process hang di GPU thread.
+
+Stage Summary:
+- LOGIN FLOW: ✅ WORKING (cookies tersimpan, session valid, API templates endpoint merespons)
+- API SERVER: ✅ WORKING di port 7000
+- RENDER FLOW: ❌ BLOCKED oleh hardware limitation
+- Root cause: server headless tanpa GPU, swiftshader WebGL terlalu lambat untuk CapCut editor
+- BUTUH: GPU server (e.g. NVIDIA T4) atau Xvfb + virtualgl untuk hardware-accelerated WebGL di headless
+- Workaround mungkin: coba non-headless mode via Xvfb, atau cari template CapCut yg lebih ringan (bukan editor SPA full)
