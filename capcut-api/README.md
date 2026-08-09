@@ -1,115 +1,282 @@
-# JJ CapCut Free Fire Template Generator
+# CapCut JJ API
 
-A Next.js 16 web app that fetches **real CapCut template data** from CapCut's public template page (no auth/token required) and lets users preview them with their own Free Fire screenshots as photo placeholders.
+Pure Node.js API untuk otomatisasi CapCut: ambil template, sisipkan 2+ gambar, render jadi video, dan hasilkan URL unduhan. Sepenuhnya otomatis menggunakan Puppeteer (headless Chromium) + Hono.
 
-> Built with Next.js 16 · TypeScript · Tailwind CSS · Framer Motion · shadcn/ui
+## Fitur
 
-## Features
+- **Template management**: list, search by keyword, get by URL/ID
+- **Render template**: sisipkan 2+ gambar ke template, CapCut render video
+- **Input fleksibel**: URL gambar, multipart upload, base64, atau mix
+- **Async job**: POST /render → return jobId → poll /status/:jobId → /download/:jobId
+- **Static serve**: video hasil disimpan lokal, di-serve via `/files/videos/*`
+- **Auth**: email/password, atau persistent userDataDir (login 1x pakai `manual-login.js`)
 
-- **Live CapCut Data** — Pulls 60+ real templates directly from `capcut.com/template` via SSR scraping (no API key needed)
-- **3 View Modes** — Detail / List / Render preview
-- **9 FF Screenshot Slots** — Upload your own Free Fire screenshots as template photo placeholders
-- **6 Style Presets** — JJ / Viral / DJ / Aesthetic / Cinematic / Trending
-- **11 Categories** — editors-pick, social, holiday, calendar, anniversary, record, effects, industry, business, insights, others
-- **Real Video Playback** — Plays actual CapCut template preview MP4s
-- **Real Stats** — useCount, likeCount, viewCount, duration, ratio, resolution
-- **Mobile Responsive** — Works great on 390px mobile viewports
+## Stack
 
-## How It Works
+- Node.js 18+
+- Hono (HTTP framework)
+- Puppeteer (browser automation)
+- formidable (multipart parser)
+- axios (image download)
+- pino (logger)
 
-### 1. CapCut Data Fetching (`src/app/api/capcut/list/route.ts`)
+## Setup
 
-CapCut's `/template` page is server-side rendered and embeds template data inside `<script data-fn-name="r" data-fn-args='[...]'>` tags. This app:
+### 1. Install dependencies
 
-1. Fetches `https://www.capcut.com/template` server-side
-2. Parses all `data-fn-args` script tags
-3. HTML-entity decodes the payload (`&quot;` → `"`, `&amp;` → `&`, `&#x2F;` → `/`, etc.)
-4. Extracts the `videoTemplates` array from the JSON structure
-5. Returns clean JSON to the client
+```bash
+cd /home/z/my-project/capcut-api
+npm install
+```
 
-No signature, token, or cookie is required — CapCut serves this data publicly in the initial HTML.
+Puppeteer akan otomatis download Chromium (~300MB) saat install pertama.
 
-### 2. Template Fields
+### 2. Konfigurasi environment
 
-Each template includes:
+```bash
+cp .env.example .env
+```
 
-```ts
+Edit `.env`, isi minimal:
+
+```dotenv
+CAPCUT_EMAIL=email_kamu@xxx.com
+CAPCUT_PASSWORD=password_kamu
+HEADLESS=true           # set false saat debugging selector
+PORT=3000
+PUBLIC_BASE_URL=http://localhost:3000
+```
+
+### 3. (Rekomendasi) Login manual sekali untuk dapat session
+
+Email/password login rawan captcha. Lebih stabil: login 1x manual, simpan session:
+
+```bash
+npm run login:manual
+```
+
+Browser non-headless akan terbuka. Login CapCut via QR atau email. Setelah terdeteksi login, session tersimpan ke `./.capcut-profile`. Lalu update `.env`:
+
+```dotenv
+CAPCUT_USER_DATA_DIR=./.capcut-profile
+# CAPCUT_EMAIL & PASSWORD bisa dikosongkan
+```
+
+### 4. Jalankan API
+
+```bash
+npm start
+# atau untuk dev (auto-reload)
+npm run dev
+```
+
+API listening di `http://localhost:3000`.
+
+### 5. Smoke test
+
+```bash
+npm run test:smoke
+```
+
+## API Endpoints
+
+### `GET /`
+Info API & daftar endpoint.
+
+### `GET /health`
+Health check.
+
+### `POST /render`
+Render video dari template + gambar. Async, return jobId.
+
+**Body (JSON)**:
+```json
 {
-  templateId: string         // 19-digit CapCut template ID
-  title: string
-  coverUrl: string           // signed webp cover image
-  videoUrl: string           // v16-vod.capcutvod.com MP4
-  useCount: number
-  likeCount: number
-  viewCount: number
-  duration: number           // milliseconds
-  ratio: string              // "9:16" etc
-  resolution: string         // "1080p"
-  clipsCount: number
-  uploadDate: number
-  shareUrl: string           // share.capcut.com link
+  "template": "https://www.capcut.com/templates/detail/123456",
+  "imageUrls": [
+    "https://example.com/img1.jpg",
+    "https://example.com/img2.jpg"
+  ]
 }
 ```
 
-### 3. Views
-
-- **Detail View** — Cover + play button (loads real CapCut MP4) + stats chips + 9 FF screenshot upload slots
-- **List View** — Compact grid with title, stats, ratio, duration
-- **Render View** — Cover preview + render button (mock animation, not actual video processing)
-
-## Project Structure
-
-```
-src/
-├── app/
-│   ├── api/
-│   │   ├── capcut/
-│   │   │   ├── list/route.ts       # SSR scrape of capcut.com/template
-│   │   │   ├── search/route.ts     # Search proxy (limited - CapCut search is CSR)
-│   │   │   └── detail/route.ts     # Detail proxy
-│   │   └── render/route.ts         # Render endpoint
-│   ├── page.tsx                    # Main UI with 3 view modes
-│   ├── layout.tsx
-│   └── globals.css
-├── components/ui/                  # shadcn/ui components
-├── hooks/
-└── lib/
-public/
-└── uploads/
-    └── freefire-1.jpg ~ freefire-9.jpg   # FF screenshot placeholders
+**Atau base64**:
+```json
+{
+  "template": "123456",
+  "imagesBase64": [
+    "data:image/png;base64,iVBORw0KGgo...",
+    "data:image/png;base64,iVBORw0KGgo..."
+  ]
+}
 ```
 
-## Getting Started
+**Atau mix**:
+```json
+{
+  "template": { "url": "https://www.capcut.com/templates/detail/123456" },
+  "images": [
+    { "type": "url", "value": "https://example.com/img1.jpg" },
+    { "type": "base64", "value": "data:image/png;base64,..." },
+    { "type": "file", "value": "/tmp/already/saved.jpg" }
+  ]
+}
+```
+
+**Atau multipart/form-data**:
+```
+POST /render
+Content-Type: multipart/form-data
+
+template=https://www.capcut.com/templates/detail/123456
+images=@/path/to/img1.jpg
+images=@/path/to/img2.jpg
+```
+
+**Response 202**:
+```json
+{
+  "jobId": "abc123def456",
+  "status": "queued",
+  "statusUrl": "/render/status/abc123def456",
+  "downloadUrl": "/render/download/abc123def456"
+}
+```
+
+### `GET /render/status/:jobId`
+Cek status job.
+
+```json
+{
+  "jobId": "abc123def456",
+  "status": "running",
+  "progress": 50,
+  "message": "Images uploaded, waiting for editor to apply",
+  "videoUrl": null,
+  "error": null,
+  "createdAt": 1736000000000,
+  "updatedAt": 1736000030000
+}
+```
+
+`status`: `queued` | `running` | `completed` | `failed`
+
+### `GET /render/download/:jobId`
+Redirect ke URL file video (302) saat status `completed`. Status lain return 409.
+
+### `GET /templates?limit=20&category=`
+List template populer CapCut.
+
+### `GET /templates/search?q=keyword&limit=20`
+Search template by keyword.
+
+### `GET /templates/:id?url=` 
+Detail template. `:id` bisa template ID, atau gunakan `?url=https://...`.
+
+### `GET /files/videos/:filename`
+Static serve video hasil render.
+
+## Contoh End-to-End (curl)
 
 ```bash
-# Install deps
-bun install   # or npm install / pnpm install
+# 1. Submit render
+JOB=$(curl -s -X POST http://localhost:3000/render \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "template": "https://www.capcut.com/templates/detail/123456",
+    "imageUrls": ["https://example.com/img1.jpg", "https://example.com/img2.jpg"]
+  }' | jq -r .jobId)
 
-# Run dev server
-bun dev       # or npm run dev
+echo "Job: $JOB"
 
-# Open http://localhost:3000
+# 2. Poll status (CapCut render butuh 2-5 menit)
+while true; do
+  STATUS=$(curl -s http://localhost:3000/render/status/$JOB)
+  echo "$STATUS" | jq '{status, progress, message}'
+  if echo "$STATUS" | jq -e '.status == "completed" or .status == "failed"' > /dev/null; then break; fi
+  sleep 10
+done
+
+# 3. Download video
+curl -L http://localhost:3000/render/download/$JOB -o result.mp4
+echo "Video saved to result.mp4"
 ```
 
-## Tech Stack
+## ⚠️ Catatan Penting
 
-| Layer | Tech |
-|-------|------|
-| Framework | Next.js 16 (App Router) |
-| Language | TypeScript 5 |
-| Styling | Tailwind CSS 4 |
-| Animation | Framer Motion 12 |
-| UI Components | shadcn/ui + Radix UI |
-| Icons | lucide-react |
-| Runtime | Bun (recommended) / Node 20+ |
+### Selector DOM bisa berubah
+CapCut adalah SPA yang sering update UI. Selector di `src/services/capcut-browser.js` (constant `SELECTORS`) diuji Desember 2024. Bila gagal:
+1. Set `HEADLESS=false` di `.env`
+2. Jalankan `npm run dev` lalu trigger request
+3. Inspect DOM yang berubah, update selector di `SELECTORS` constant
 
-## Known Limitations
+### Anti-bot & TOS
+Otomatisasi CapCut bisa melanggar TOS mereka. Gunakan dengan akun demo/testing, bukan akun utama. Untuk skala produksi, pertimbangkan:
+- Rotate IP / proxy
+- Delay antar request (`SLOW_MO=200`)
+- Limit concurrency (`MAX_CONCURRENT_JOBS=1`)
+- Captcha solver service (kalau login via email kena captcha)
 
-1. **Search** — CapCut's search is client-side rendered with signed requests. The search endpoint exists but returns limited results.
-2. **Render** — The render button triggers a mock animation. Real video rendering would require server-side ffmpeg/Remotion.
-3. **Download** — No actual file download yet; the button is UI-only.
-4. **Rate Limits** — Hitting CapCut too frequently may trigger Cloudflare blocks. The app refreshes on demand, not on a timer.
+### Render waktu
+CapCut render video butuh 1-5 menit tergantung template complexity & server load. Pastikan:
+- `RENDER_TIMEOUT=300000` (5 menit) cukup
+- Client poll setiap 10-15 detik, bukan block
+- Browser memory cukup (Chromium butuh ~500MB per session)
+
+### Production deployment
+- Run di Docker container dengan Chromium dependencies (`apt-get install -y libnss3 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2`)
+- Reverse proxy (nginx) untuk HTTPS & static file caching
+- Set `PUBLIC_BASE_URL` ke URL public (bukan localhost)
+- Monitor `videos/` folder size, setup cron cleanup
+- `MAX_CONCURRENT_JOBS` naikkan ke 2-3 kalau RAM server besar
+
+## Struktur Project
+
+```
+capcut-api/
+├── src/
+│   ├── index.js                 # Entry point, Hono app, server bootstrap
+│   ├── routes/
+│   │   ├── render.js            # POST /render, GET /status, GET /download
+│   │   └── templates.js         # GET /templates, /templates/search, /templates/:id
+│   ├── services/
+│   │   ├── capcut-browser.js    # Puppeteer wrapper: login, list, search, getTemplate, renderTemplate
+│   │   ├── input-handler.js     # Resolve input (URL/upload/base64/mix) → local file paths
+│   │   ├── job-manager.js       # Async job queue, status tracking, cleanup
+│   │   └── render-worker.js     # End-to-end render pipeline (browser launch → render → save)
+│   └── utils/
+│       ├── config.js            # dotenv config loader
+│       ├── logger.js            # pino logger
+│       ├── paths.js             # dir init, saveVideo, videoPublicUrl, sleep
+│       └── multipart.js         # formidable wrapper
+├── scripts/
+│   ├── manual-login.js          # 1x manual login, save session
+│   └── smoke-test.js            # Basic endpoint test
+├── videos/                      # rendered video output (gitignored)
+├── downloads/                   # temp downloaded images (gitignored)
+├── tmp/                         # tmp working files (gitignored)
+├── .env.example
+├── package.json
+└── README.md
+```
+
+## Troubleshooting
+
+**`Error: CAPCUT_EMAIL/CAPCUT_PASSWORD not set`**
+Isi credentials di `.env`, atau set `CAPCUT_USER_DATA_DIR` untuk reuse session.
+
+**`Login failed. Page text snippet: ...`**
+CapCut menampilkan captcha atau error message. Buka `HEADLESS=false`, login manual via `npm run login:manual`.
+
+**`Upload file input not found in CapCut editor`**
+Selector `fileInput` di `capcut-browser.js` berubah. Update `SELECTORS.fileInput` setelah inspect DOM baru.
+
+**`Render timeout or no download URL detected`**
+Render butuh >5 menit. Naikkan `RENDER_TIMEOUT` di `.env`, atau template terlalu kompleks.
+
+**Browser crash / SIGKILL**
+Memory kurang. Turunkan `MAX_CONCURRENT_JOBS=1`, atau tambah RAM swap.
 
 ## License
 
-MIT — for educational purposes. CapCut is a trademark of ByteDance; this project is not affiliated with CapCut.
+MIT. Gunakan dengan tanggung jawab. Pengembang tidak bertanggung jawab atas penyalahgunaan akun CapCut atau pelanggaran TOS.
