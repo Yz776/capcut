@@ -1,3 +1,5 @@
-2026/08/09-10:47:42.210 26b2 Reusing MANIFEST /home/z/my-project/capcut-api/.capcut-profile/Default/Site Characteristics Database/MANIFEST-000001
-2026/08/09-10:47:42.211 26b2 Recovering log #3
-2026/08/09-10:47:42.211 26b2 Reusing old log /home/z/my-project/capcut-api/.capcut-profile/Default/Site Characteristics Database/000003.log 
+2026/08/09-12:11:42.361 3700 Log #3: 39 ops saved to Table #4 OK
+2026/08/09-12:11:42.361 3700 Archiving /home/z/my-project/capcut-api/.capcut-profile/Default/Site Characteristics Database/000003.log: OK
+2026/08/09-12:11:42.362 3700 Table #4: 39 entries OK
+2026/08/09-12:11:42.362 3700 Archiving /home/z/my-project/capcut-api/.capcut-profile/Default/Site Characteristics Database/MANIFEST-000001: OK
+2026/08/09-12:11:42.362 3700 **** Repaired leveldb /home/z/my-project/capcut-api/.capcut-profile/Default/Site Characteristics Database; recovered 1 files; 560 bytes. Some data may have been lost. ****
