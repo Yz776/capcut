@@ -17,6 +17,8 @@ def run_remote(commands: str, timeout: int = 60) -> str:
     try:
         client.connect(HOST, port=PORT, username=USER, password=PASSWORD, timeout=15)
         stdin, stdout, stderr = client.exec_command(commands, timeout=timeout)
+        # Set channel timeout too
+        stdout.channel.settimeout(timeout)
         out = stdout.read().decode("utf-8", errors="replace")
         err = stderr.read().decode("utf-8", errors="replace")
         return out + (("\n--- STDERR ---\n" + err) if err.strip() else "")
@@ -26,8 +28,15 @@ def run_remote(commands: str, timeout: int = 60) -> str:
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        cmd = " ".join(sys.argv[1:])
+        # If first arg is a number, use as timeout
+        if sys.argv[1].isdigit():
+            timeout = int(sys.argv[1])
+            cmd = " ".join(sys.argv[2:])
+        else:
+            timeout = 60
+            cmd = " ".join(sys.argv[1:])
     else:
+        timeout = 60
         cmd = "ls ~/capcut"
-    print(f">>> {cmd}")
-    print(run_remote(cmd))
+    print(f">>> {cmd} (timeout={timeout}s)")
+    print(run_remote(cmd, timeout=timeout))

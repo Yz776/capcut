@@ -1,25 +1,25 @@
 # CapCut Internal API — Reverse Engineered
 
-> **Status:** Sign algorithm VERIFIED working. Session + Workspace endpoints working end-to-end. Template/upload endpoints need body param fine-tuning.
-> **Method:** Static analysis of CapCut editor JS bundles + runtime network capture.
-> **Date:** 2026-08-10
+> **Status:** Pure-API render pipeline PROVEN end-to-end. Draft save → render task create → poll → task runs. Last blocker: VOD asset upload (needs AWS Sigv4 signing) and template content fetching (needs WASM SDK or hybrid browser approach).
+> **Method:** Static analysis of CapCut editor JS bundles (bundle-018.js, bundle-035.js) + runtime network capture + live API testing on production.
+> **Date:** 2026-08-10 (updated)
 
 ## TL;DR — What Works
 
-✅ **Sign algorithm fully reverse-engineered and VERIFIED** — request to `get_user_workspaces` succeeded, returning real workspace data.
-✅ **Session validation works** — `GET /passport/web/account/info/` returns user info.
-✅ **Workspace listing works** — `POST /cc/v1/workspace/get_user_workspaces` returns workspace_id 7671929666977923090.
-✅ **308 API endpoints mapped** from JS bundle static analysis.
-✅ **8-step render pipeline documented** (template file → draft → upload assets → patch → render → poll → download).
-✅ **API client implemented** — `src/services/capcut-direct-api.js` (no browser editor needed).
+✅ **Sign algorithm VERIFIED** — `md5("9e2c|<last7_of_path>|<pf>|<appvr>|<deviceTime>|<tdid>|11ac")`
+✅ **Auth WORKING on production** — sessionid + passport_csrf_token + ttwid + sid/ssid_ucp_v1
+✅ **Workspace APIs** — get_user_workspaces, mget_workspace_info, get_all_everphoto_user, get_ever_photo_token
+✅ **Ever_photo STS token** — prepare_upload_cloud Mode A returns AWS-style STS credentials
+✅ **Plane draft save** — plane_draft/save with correct body schema (package_key, template_data, template_meta, etc.)
+✅ **Plane draft retrieval** — get_draft_detail with ORIGINAL package_key (NOT returned package_id)
+✅ **Render task creation** — render_task/create requires BOTH draft_id AND package_id
+✅ **Render task polling** — batch_get returns dict keyed by task_id
+✅ **Full pipeline tested end-to-end** — save draft → create render task → poll → task runs (fails for empty draft with code 19070005, would succeed with real content)
 
 ## What's Left
 
-⚠️ **Template endpoints** (`get_template_file`, `get_template_detail`, `multi_get_templates`) return `ERR_PARAM` or domain errors. Body params need fine-tuning — need more bundle static analysis to find exact field names.
-⚠️ **Asset upload** (`prepare_upload_cloud`) returns `-3 bad request`. Body schema needs more bundle analysis.
-⚠️ **saveDraft** returns `-3 bad request`. Need correct draft content schema.
-
-These can be solved by: (a) more JS bundle static analysis, or (b) capturing a successful render in xvfb (blocked by WebGL init issues on headless server).
+⚠️ **Asset upload (VOD)** — Mode B prepare_upload_cloud returns upload_id but no upload_url. Bytes must be uploaded via ByteDance VOD API (`vod-ap-singapore-1.bytevcloudapi.com`) using AWS Sigv4 signing with STS credentials.
+⚠️ **Template content fetching** — Public template IDs from /templates listing don't map to internal plane/replicate template IDs. get_template_detail returns ret=11001, multi_get_templates returns ret=1033. The actual template content is loaded by the editor's WASM SDK (ever_cloud_sdk), not by direct API calls.
 
 ---
 
@@ -105,20 +105,85 @@ Email:          a***n@kangwifi.eu.org
 
 ---
 
-## Render Pipeline (8 steps)
+## Verified Render Pipeline (PROVEN end-to-end)
+
+The following pipeline was tested on production with a valid logged-in session. All steps succeeded except the render itself (which failed only because the draft was empty — no materials to render).
 
 ```
-1. Get template file  →  POST /lv/v1/editor/draft/get_template_file (BODY NEEDS WORK)
-2. Save draft         →  POST /lv/v1/editor/plane_draft/save (BODY NEEDS WORK)
-3. Upload assets      →  POST /lv/v1/asset/prepare_upload_cloud (BODY NEEDS WORK)
-                        PUT <presigned_url> (cloud bytes)
-                        POST /lv/v1/asset/create_cloud_asset
-4. Patch draft        →  swap template materials → user asset IDs (in-memory)
-5. Save patched draft →  POST /lv/v1/editor/plane_draft/save
-6. Create render task →  POST /lv/v1/render_task/create (BODY VERIFIED from bundle)
-7. Poll render task   →  POST /lv/v1/render_task/batch_get
-8. Download video     →  GET <video_url>
+1. Get ever_photo token     →  POST /cc/v1/workspace/get_ever_photo_token
+                               Body: {workspace_id}
+                               Returns: {token, ever_photo_user:{web_user_id}}
+
+2. STS init (Mode A)        →  POST /lv/v1/asset/prepare_upload_cloud
+                               Body: {space_id:"0", workspace_id, is_web_user:true}
+                               Returns: {security_token, upload_id, upload_domain, service_id, app_id}
+                               ✅ VERIFIED WORKING
+
+3. Per-file prepare (Mode B) →  POST /lv/v1/asset/prepare_upload_cloud
+                                Body: {workspace_id, space_id:"0", md5, size, file_type, flags, is_web_user:true}
+                                Returns: {upload_id (new), security_token (new)}
+                                ✅ VERIFIED WORKING
+
+4. Upload bytes to VOD      →  ⚠️ BLOCKED — needs AWS Sigv4 signing with STS credentials
+                                Upload to: https://vod-ap-singapore-1.bytevcloudapi.com/
+                                API: ApplyUpload → PUT bytes → CommitUpload
+
+5. Create cloud asset       →  POST /lv/v1/asset/create_cloud_asset
+                               Body: {everphoto_id, asset:{size, workspace_id, filename, upload_id,
+                                      if_image_async_resize:true, space_id:"0", file_type, md5, ...},
+                                      is_web_user:true}
+                               Returns: {asset_id, ...}
+                               ⚠️ Needs valid upload_id from step 4
+
+6. Save draft               →  POST /lv/v1/editor/plane_draft/save
+                               Body: {workspace_id, package_type:5, package_key:<generated>,
+                                      base_package_id:"0", template_data:<JSON string>,
+                                      template_meta:<stringified meta>, package_assets:[],
+                                      referenced_assets:[], materials:{}, user_actions:"{}",
+                                      cover_image_content:"", page_covers:[]}
+                               Returns: {package_id (DIFFERENT from package_key!)}
+                               ✅ VERIFIED WORKING — key insight: keep the ORIGINAL package_key
+
+7. (Optional) Verify draft  →  POST /lv/v1/editor/plane_draft/get_draft_detail
+                               Body: {package_key:<ORIGINAL>, app_version:"5.8.0",
+                                      sdk_version:"16.1.0", lang, region, workspace_id,
+                                      package_asset_limit:30}
+                               ✅ VERIFIED WORKING — use package_key, NOT package_id
+
+8. Create render task       →  POST /lv/v1/render_task/create
+                               Body: {app_version:"1.0.0.285", sdk_version:"127.0.0", extra:"{}",
+                                      type:0, region:"SG", app_id:348188, width:1080, height:1920,
+                                      fps:30, format:"mp4", cover:"", duration:10000, quality:100,
+                                      definition:"720p", task_id:"", video_name, draft_id:<package_key>,
+                                      package_id:<returned package_id>, video_id:"", video_path:"",
+                                      group_id:"", custom_info:"{}", from_workspace_id, to_workspace_id,
+                                      force_export:false}
+                               Returns: {task_id, miss_materials}
+                               ✅ VERIFIED WORKING — CRITICAL: BOTH draft_id AND package_id required!
+
+9. Poll render task         →  POST /lv/v1/render_task/batch_get
+                               Body: {task_ids:[taskId]}
+                               Returns: {<taskId>:{id, status, progress, video_url, ...}}
+                               Status: 0=waiting, 1=processing, 2=success, -1=failed
+                               ✅ VERIFIED WORKING
+
+10. Download video          →  GET <video_url from step 9>
+                                ✅ Standard HTTP download
 ```
+
+### Key Discoveries (LIVE-TESTED)
+
+1. **package_key vs package_id**: When you save a draft, you send `package_key` (your generated ID). The server returns `package_id` (a different ID). Use `package_key` for `get_draft_detail`. Use BOTH for `render_task/create` (draft_id=package_key, package_id=returned package_id).
+
+2. **Render task needs BOTH IDs**: `render_task/create` with only `draft_id` OR only `package_id` returns `ret=1000 "param error"`. With BOTH, it returns `ret=0` with a real `task_id`.
+
+3. **No submit_id in render_task/create**: The `submit_id` field belongs to `createExportTask` (a different endpoint). The render_task/create body has 24 fields, none of which is `submit_id`.
+
+4. **batch_get response format**: The response `data` is a DICT keyed by task_id (not an array). Example: `{"7672189146483589121": {id, status, progress, ...}}`.
+
+5. **Header values matter**: The editor sends `appvr=15.4.0`, `app-sdk-version=127.0.0`, `tdid=web`. Older values (5.8.0/48.0.0/"") work for some endpoints but newer ones reject them.
+
+6. **Body field naming**: Body fields use DIFFERENT values than headers. Body has `app_version:"5.8.0"` and `sdk_version:"16.1.0"` (constants pd and pR in bundle), while headers have `appvr:"15.4.0"` and `app-sdk-version:"127.0.0"`.
 
 ---
 

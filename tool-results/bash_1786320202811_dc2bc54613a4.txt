@@ -1,0 +1,162 @@
+4307 bytes)
+>>> cd ~/capcut && node scripts/inspect-template-page.js 7617043391162928401 zh-tw 2>&1 | grep -v '"level":'
+
+  /data (persistent) | /root → /data/root
+  LAUNCHER_MODE=pm2  |  kstatus
+  Edit launcher: nano /data/launcher/index.js
+  APIs (Bun): http://0.0.0.0:47291  (/docs = Swagger)
+
+v20.20.2
+1.22.22
+10.9.9
+1.3.14
+cloudflared version 2026.7.3 (built 2026-07-23-09:58 UTC)
+
+Visiting https://www.capcut.com/zh-tw/template-detail/x/7617043391162928401...
+
+Captured 46 API requests and 30 JSON responses
+
+=== Requests ===
+  GET https://www.capcut.com/zh-tw/template-detail/x/7617043391162928401
+  GET https://sf16-web-login-neutral.capcutstatic.com/obj/capcut-web-login-static/ies/ccweb/scm_storage/sdk/browser.1.14.1.sg.js?bid=growth_capcut_seo&globalName=ccWebSlardar
+  POST https://mcs-normal-sg.capcutapi.com/webid
+    body: {"app_id":348188,"url":"https://www.capcut.com/zh-tw/template-detail/x/7617043391162928401","user_agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","referer":"","user_unique_id":""}
+  POST https://mon-sg.capcutapi.com/monitor_browser/collect/batch/security/?bid=argus3
+    body: [{"age":1786320195162,"type":"xss","url":"https://www.capcut.com/zh-tw/template-detail/x/7617043391162928401","body":{"disposition":"enforce","collectKey":"W$Zk$2$rd3l%bWhq%jA0eFpFWT$NMXB-%21aa1-yTjJZekpXZ*xsW$NtNWtXRTA5","collectData":"master","collectMode":"growth_capcut_seo"},"user-agent":""}]
+  POST https://www.capcut.com/lv/v1/user/web/get_user_info
+  GET https://edit-api-sg.capcut.com/lv/v1/event/report?is_pwa=0&pwa_from=not_pwa&open_from_pwa=0&web_id=7672186806352135700&event_name=user_page_view&os_name=linux&app_version=&is_first_visit_page=0&is_session_start_page=1&browser=Chrome&referrer=&capcut_locale=zh-Hant-TW&custom=%7B%22session_start_url%22%3A%22https%3A%2F%2Fwww.capcut.com%2Fzh-tw%2Ftemplate-detail%2Fx%2F7617043391162928401%22%2C%22channel_from%22%3A%22ut%22%7D&seo_info=%7B%22channel_level1%22%3A%22Direct%22%2C%22channel_level2%22%3A%22enter_url%22%2C%22channel_level3%22%3A%22%22%2C%22channel_level4%22%3A%22%22%7D
+  GET https://www.capcut.com/login-embed?scene=custom&sdk_login_preset=1&col=1&sdk_preload=1&title_key=ccug_web_signinUpd_sign_titleTemp
+  GET https://www.capcut.com/luckycat/i18n/capcut/thirdpatry_share/v1/landing_page/get_similar_templates?template_id=7617043391162928401&keyword=creator+search+insights&tabs=video&region_code=tw&language=zh-tw&cursor=&size=20
+  POST https://www.capcut.com/lv/v1/user/web/user_info
+    body: {"sem_info":{"is_sem":false,"medium":"Direct","register_source":"direct","register_second_source":"enter_url"}}
+  GET https://mon-sg.capcutapi.com/monitor_web/settings/browser-settings?bid=growth_capcut_seo&store=1
+  GET https://sf16-web-login-neutral.capcutstatic.com/obj/capcut-web-login-static/ies/ccweb/scm_storage/sdk/browser.1.14.1.sg.js?bid=cc_web&globalName=ccWebSlardar
+  GET https://sf16-web-login-neutral.capcutstatic.com/obj/capcut-web-login-static/tiktok_privacy_protection_framework/loader/atsx/1.0.0.965/core.js?globalName=__PNS_RUNTIME__
+  POST https://www.google-analytics.com/g/collect?v=2&tid=G-F9J0QP63RB&gtm=45je6852v9164290103z8898982266za20gzb898982266zd898982266&_p=1786320194922&gcs=G100&gcd=13p3p3l3l5l1&npa=0&dma=0&_eu=AAAAAGAC&are=1&cid=952797627.1786320196&frm=0&pscdl=denied&rcb=2&sr=800x600&uaa=&uab=&uafvl=&uam=&uamb=0&uap=&uapv=&uaw=0&ul=en-us&gaf=2&_s=1&tag_exp=115616985~115938465~115938468~118897920~118897930~119337768~119367802~119367810~119527019~119896802&sid=1786320195&sct=1&seg=0&dl=https%3A%2F%2Fwww.capcut.com%2Fzh-tw%2Ftemplate-detail%2Fx%2F7617043391162928401&dt=Be%20More%20Social%20-%20CapCut&en=page_view&_fv=1&_nsi=1&_ss=1&tfd=1715
+  POST https://pagead2.googlesyndication.com/ccm/collect?rcb=2&frm=0&apvc=1&tid=AW-609140249&en=page_view&dl=https%3A%2F%2Fwww.capcut.com%2Fzh-tw%2Ftemplate-detail%2Fx%2F7617043391162928401&scrsrc=www.googletagmanager.com&rnd=1751374738.1786320196&navt=n&npa=0&gtm=45je6852v9164290103z8898982266za20gzb898982266zd898982266xec&gcs=G100&gcd=13p3p3l3l5l1&dma=0&tag_exp=115616985~115938465~115938468~118897920~118897930~119337768~119367802~119367810~119527019~119896802&tft=1786320195822&tfd=1762&tids=AW-609140249&fmt=8
+  GET https://sf16-web-login-neutral.capcutstatic.com/obj/capcut-web-login-static/tiktok_privacy_protection_framework/loader/atsx/1.0.0.965/devtools.js?globalName=__PNS_RUNTIME__&__PNS_SW_CACHE__=1&__PNS_SW_CACHE_KEY__=to-json-schema
+  POST https://www.capcut.com/ttwid/check/
+    body: {"aid":348188,"service":"www.capcut.com","unionHost":"https://ttwid-normal-sg.capcutapi.com","union":true,"needFid":true,"fid":"cQLoQz7lVybKFpKMD-FrAM","migrate_priority":1}
+  GET https://mon-sg.capcutapi.com/monitor_web/settings/browser-settings?bid=webmssdk&store=1
+  GET https://starling-normal-sg.capcutapi.com/check_and_get_text/38d171503ca311ee866b4ff6c924e0e2/normal/WebClient?lang=en,zh
+  GET https://www.capcut.com/api/v1/web-cookie-privacy/config?locale=zh-Hant-TW&appId=348188&theme=default&tea=0
+  POST https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?bid=capcut_pns_web_runtime
+    body: {"ev_type":"batch","list":[{"ev_type":"http","payload":{"api":"xhr","request":{"method":"get","url":"https://cost_time","timestamp":1786320195928,"body":"{\"version\":\"1.0.0.965\",\"runtime_env\":\"out_app\",\"module\":\"loader\",\"__business__\":\"goofy-deploy-app-90784\"}"},"response":{"status":200,"is_custom_error":false,"timestamp":1786320195928},"duration":0,"extra":{"time":"22"}},"common":{"bid":"capcut_pns_web_runtime","user_id":"7eeb4e53-8c8e-4baa-9fb8-4bb6d4f0f776","release":"1.0.0.965...
+  GET https://www.capcut.com/manifest.json
+  POST https://vcs-sg.capcutapi.com/vc/setting?aid=348188
+    body: {}
+  GET https://starling-normal-sg.capcutapi.com/check_and_get_text/2e1fcc60aeaa11e99ef535aeebd27c9b/normal/H5?lang=en,en
+  GET https://mon-sg.capcutapi.com/monitor_web/settings/browser-settings?bid=pns_cookie_banner_slardar&store=1
+  GET https://mssdk-sg.capcutapi.com/web/resource?eq=bwRDytRenOAESxJNlD1oBxUOc/N8WImXmpr9BNeW7hCN3j0vhVvfajr0fGV2EpgLA16--q4tDq2YbfXl6clzPD==
+  POST https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=webmssdk
+    body: {"ev_type":"batch","list":[{"ev_type":"pageview","payload":{"pid":"/login-embed","source":"init"},"common":{"bid":"webmssdk","user_id":"c9191187-dc24-4a31-9b74-9dfb2ed7e45d","device_id":"72bd601f-0db5-47c4-851f-a139a3f620ac","session_id":"6542f4ba-9386-40ae-9908-2738a124f5c6","release":"1.0.0.71","env":"production","url":"https://www.capcut.com/login-embed?scene=custom&sdk_login_preset=1&col=1&sdk_preload=1&title_key=ccug_web_signinUpd_sign_titleTemp","timestamp":1786320196158,"sdk_version":"1.1...
+  POST https://vmweb-normal-sg.capcutapi.com/service/2/abtest_config/
+    body: {"header":{"aid":348188,"user_unique_id":"7672186810416219649","user_id":0,"user_is_login":false,"web_id":"7672186810416219649","app_id":348188,"app_version":"1.0.1375","os_name":"Linux","os_version":"","device_model":"","language":"en-US","platform":"web","sdk_version":"5.2.4_oversea","sdk_lib":"js","timezone":7,"tz_offset":-25200,"resolution":"800x600","browser":"Chrome","browser_version":"131.0.0.0","referrer":"","referrer_host":"","width":800,"height":600,"screen_width":800,"screen_height":6...
+  POST https://mcs-normal-sg.capcutapi.com/tobid
+    body: {"app_id":348188,"user_unique_id":"7672186810416219649","web_id":"7672186810416219649"}
+  POST https://mcs-normal-sg.capcutapi.com/list
+    body: [{"events":[{"event":"page_view","params":"{\"_staging_flag\":0,\"is_pwa\":0,\"pwa_from\":\"not_pwa\",\"open_from_pwa\":0,\"url\":\"https://www.capcut.com/zh-tw/template-detail/x/7617043391162928401\",\"url_path\":\"/zh-tw/template-detail/x/7617043391162928401\",\"title\":\"Be More Social - CapCut\",\"event_index\":1786320760289}","local_time_ms":1786320197478,"is_bav":0,"session_id":"2cb83509-6909-4996-8f55-214af782b6c7"},{"event":"towards_page_template_detail_action","params":"{\"_staging_flag...
+  GET https://sf16-web-tos-buz.capcutstatic.com/obj/capcut-web-buz-sg/common/images/lv_web.ico
+  GET https://sf16-web-tos-buz.capcutcdn-us.com/obj/capcut-web-buz-tx/pwa/512.png
+  POST https://mcs-normal-sg.capcutapi.com/list
+    body: [{"events":[{"event":"abtest_cache","params":"{\"_staging_flag\":0,\"is_pwa\":0,\"pwa_from\":\"not_pwa\",\"open_from_pwa\":0,\"env_uuid\":\"7672186810416219649\",\"cache\":\"{\\\"data\\\":{\\\"_capcut_ug_for_test_ab\\\":{\\\"val\\\":{\\\"value\\\":2},\\\"vid\\\":\\\"121358992\\\"},\\\"ai_captions_entry\\\":{\\\"val\\\":{\\\"enable\\\":true,\\\"initialSidePanelTab\\\":\\\"style\\\"},\\\"vid\\\":\\\"121821450\\\"},\\\"ai_creator_canvas_agent_v2\\\":{\\\"val\\\":true,\\\"vid\\\":\\\"75720610\\\"},\...
+  GET https://mon-sg.capcutapi.com/monitor_web/settings/browser-settings?bid=webmssdk&store=1
+  POST https://mcs-normal-sg.capcutapi.com/list
+    body: [{"events":[{"event":"abtest_exposure","ab_sdk_version":"73487263","params":"{\"ab_url\":\"https://www.capcut.com/zh-tw/template-detail/x/7617043391162928401\",\"data\":{\"_capcut_ug_for_test_ab\":{\"val\":{\"value\":2},\"vid\":\"121358992\"},\"ai_captions_entry\":{\"val\":{\"enable\":true,\"initialSidePanelTab\":\"style\"},\"vid\":\"121821450\"},\"ai_creator_canvas_agent_v2\":{\"val\":true,\"vid\":\"75720610\"},\"ai_creator_default_manual_script\":{\"val\":false,\"vid\":\"74464691\"},\"ai_creat...
+  POST https://mon-sg.capcutapi.com/monitor_browser/collect/batch/
+    body: {"ev_type":"batch","list":[{"ev_type":"setting","payload":{"entryType":"setting","name":"//vcs-sg.capcutapi.com","duration":67,"startTime":1786320197016},"common":{"bid":"verify_center_va","pid":"348188","view_id":"__1786320197015","user_id":"bf0dbc89-b10e-40c9-acb8-e956bdf057c1","device_id":"46b081b4-8bf9-42b0-8482-9706bba57a6b","session_id":"d7dd7b86-f68f-4516-b162-83c855983ef4","release":"3.8.27-alpha.1","env":"sg","url":"","protocol":"","domain":"","path":"","query":"","timestamp":1786320197...
+  POST https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=pns_cookie_banner_slardar
+    body: {"ev_type":"batch","list":[{"ev_type":"custom","payload":{"name":"pns_cuj","type":"event","metrics":{"timestamp":3082.8999996185303,"duration":0},"categories":{"status":"START","name":"load_cookie_banner","stepName":"FINISH","error":"","detail":"","appId":"348188","appVersion":"1.0.0.285","tenant":"paas_capcut"}},"common":{"bid":"pns_cookie_banner_slardar","user_id":"053797ac-3a91-455f-8c6e-47b59a28c3a7","device_id":"7c66f02c-ce11-4f6c-9c3f-80ae95a96f08","session_id":"def1be49-ef18-4936-9f56-233...
+  POST https://mssdk-sg.capcutapi.com/web/report?msToken=&X-Bogus=DFSzswfOQDGBbcJMCWHvQW4XWCeB&X-Gnarly=MF2pSxApx0rPvuTI3a0iK/TXit2pEyVTzA8Nc4qvw4AiFneCMZW-BwD7wq8dN604vZz-FeSMLwXquW1ZsuNKcXCM/N0OAmA0Ld7lJX7dnbBybrfTbAJgk3ILqXjeewoICgVy8MyC9TPhrThuUTxYdkLhMEZgY0VdGA2Ag8-3k1bhR8pLmEqIZSOmECoq/vScIMo81AbxdyD1/HPIe4moEqz8S2BqUjG/WOmKR51zs3QKV1Ufc-t2Z-rjRgVg-S9UyhwGCHgayjwziiU1rHV6YTtjvMYoCh-jI2BuUXtNjL-2TuVURYfg45Bp-rkj0/tcVDipKZD5bvG=
+    body: {"magic":538969122,"version":1,"dataType":8,"strData":"38RpTSVNBDcvAXx4V3XfQcMnDKlAS2W1R00zX9/+fUWV4K9AiZtm9PTFQtriCe/AmwUQASe1iKc8+dplg8fUbxFJSQEcuwbIaa4lFUZdziU7Z/JrJWqJ9ld7uRmjkHT8BJn9N+zfzNL9w0tpHyleG2rD+up3Ma6vxFyaYJWMYJQxaTe2whEiUpdTwrIlgRt8kRuTBi4Km2Snu/2sYWlsfguG9ZuOp1QYMLSErabrQkDKGwqtwzLKEabKr0YxCSSJKiB59QbNd6IlxIhsQI1scZ3bRs6VPnl7kF41dJCvcGvCarl+mhZO2WbhUn69a2Ziwv7qpvT3z/8Xpajk5M5Wk+X0u6iIx2Jd/EaAJxZ78s1vkInLdgzoXMDt8SZCGRF5RI/7C+vRr3Z87eSF32ubde/oXWT3Z0Or6kddzr61mTgRwGE8JmiBd/oTOOZXo...
+  POST https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=webmssdk
+    body: {"ev_type":"batch","list":[{"ev_type":"pageview","payload":{"pid":"/login-embed","source":"init"},"common":{"bid":"webmssdk","user_id":"c9191187-dc24-4a31-9b74-9dfb2ed7e45d","device_id":"72bd601f-0db5-47c4-851f-a139a3f620ac","session_id":"0194816e-1d44-4c37-a891-96cde4c1a208","release":"1.0.0.79","env":"production","url":"https://www.capcut.com/login-embed?scene=custom&sdk_login_preset=1&col=1&sdk_preload=1&title_key=ccug_web_signinUpd_sign_titleTemp","timestamp":1786320197750,"sdk_version":"1.1...
+  POST https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=webmssdk
+    body: {"ev_type":"batch","list":[{"ev_type":"custom","payload":{"name":"exLoadStatus","type":"event","metrics":{"count":1},"categories":{"status":"3","page":"https://www.capcut.com/login-embed?scene=custom&sdk_login_preset=1&col=1&sdk_preload=1&title_key=ccug_web_signinUpd_sign_titleTemp","scmVersion":"1.0.0.71","sdkVersion":"5.2.1"}},"common":{"bid":"webmssdk","user_id":"c9191187-dc24-4a31-9b74-9dfb2ed7e45d","device_id":"72bd601f-0db5-47c4-851f-a139a3f620ac","session_id":"6542f4ba-9386-40ae-9908-2738...
+  POST https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=growth_capcut_seo
+    body: {"ev_type":"batch","list":[{"ev_type":"pageview","payload":{"pid":"a1.b7.0.0","source":"init"},"common":{"bid":"growth_capcut_seo","user_id":"baea4507-e22b-413f-9e7b-75f73badaa55","device_id":"0e9af5a5-2ff4-42e7-8537-e380e4135695","session_id":"3b901008-935d-4c54-ac76-d82a98c46332","release":"1.0.0.1375","env":"production","url":"https://www.capcut.com/zh-tw/template-detail/x/7617043391162928401","timestamp":1786320195030,"sdk_version":"1.14.1","sdk_name":"SDK_SLARDAR_WEB","pid":"a1.b7.0.0","vie...
+  POST https://mssdk-sg.capcutapi.com/web/report?msToken=lfKVcQWb6xF27wvZmYW9BZM90DbebEgykYynIpqITMOu6crIbKHwH2ASdEFsWPhs91F_bo8Fmhcecy8NcjqeRiOfdX3C45Ko7izLcKKeu65DorH0Olcredf97mbtBAUeNiBU-_kH&X-Bogus=DFSzswfOjNgxP5JMCWHvsS4XWCt6&X-Gnarly=MwWZz1RmQiIXhTrjV3S64nCXRGtzuDq1b0VYbG7Rso5mwtMMe19hv13k7zHuP/0iXPFpJwpaD3vnvN5jF4195AFJU1/KVCL-W0V5EccrSSYA4kqIGp-J1ob-FJY9fbxqVHHi5QamDYM1DJb07ntnmsMlhq2fQ5dyRbqRclzVxJsxO7b7dkY-Mm6gQ98HRfuQjqoT1I0wYHGIQHh9ZAMHK3iiszGxvHkStYpAAAlULIr573bHCeTUt9K4RnBtwtKvEQNPZKsRbtkIT28adpjoTu3C77BhvD-X/VnzKlXmeA8N1hGB6iOlj5ZYmvdXqaATCuKhWA9i/WG=
+    body: {"magic":538969122,"version":1,"dataType":8,"strData":"3BJR0gdqFc1rnNG+9R1YtmaFc1E2iUHPScKOKTWc6T92HpVY0fiy6XdAxxfVib2LQInTwBhWiQws01biqEun3UHtpbhzI4BrsQZvIaQj0BH/d0GHuUya6pZw5sbs5lpEbMDKGo25/Q30UyzRn1j7hkliQJBWGqOYJySP4Yfif0Nm6T5sE7UYrvDtNiT8Y2WQhxdCV9shCcUA5GIiPiQpd7OS7obmV+GOsIwI/ySrj4QuxQysueQhv/UW88ofCwJwF7dsx6dWqezXq7hb3h6GriW5dGcLILZWagb5AXwczEvFDijY7M8Da/e57CTRiQDdOh46b6epDzbxYOViNAkje4KPrTnDW98/7iqXVFlN/FtGFPqpF5BsZciumLKkqevC6w9V31G8DTK7F71sKYV8SW3qpubj5y0KGmDYCBsavGeDpe5vqVenkRZ9Pwf+V...
+  POST https://mcs-normal-sg.capcutapi.com/list
+    body: [{"events":[{"event":"towards_page_template_detail_page","params":"{\"_staging_flag\":0,\"is_pwa\":0,\"pwa_from\":\"not_pwa\",\"open_from_pwa\":0,\"position\":\"a1.b7.c1.0\",\"action\":\"google_one_tap_skipped_unknown_reason\",\"event_index\":1786320760293}","local_time_ms":1786320200507,"is_bav":0,"ab_sdk_version":"73487263","session_id":"2cb83509-6909-4996-8f55-214af782b6c7"}],"user":{"user_unique_id":"7672186810416219649","user_id":0,"user_is_login":false,"web_id":"7672186810416219649"},"head...
+  POST https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?bid=capcut_pns_web_runtime
+  POST https://www.google-analytics.com/g/collect?v=2&tid=G-F9J0QP63RB&gtm=45je6852v9164290103za20gzb898982266zd898982266&_p=1786320194922&gcs=G100&gcd=13p3p3l3l5l1&npa=0&dma=0&_eu=AEAAAGAC&ae=a&are=1&cid=952797627.1786320196&frm=0&pscdl=denied&rcb=2&sr=800x600&uaa=&uab=&uafvl=&uam=&uamb=0&uap=&uapv=&uaw=0&ul=en-us&gaf=2&_s=2&tag_exp=115616985~115938465~115938468~118897920~118897930~119337768~119367802~119367810~119527019~119896802&sid=1786320195&sct=1&seg=0&dl=https%3A%2F%2Fwww.capcut.com%2Fzh-tw%2Ftemplate-detail%2Fx%2F7617043391162928401&dt=Be%20More%20Social%20-%20CapCut&en=scroll&epn.percent_scrolled=90&_et=78&tfd=6796
+  POST https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=webmssdk
+    body: {"ev_type":"batch","list":[{"ev_type":"custom","payload":{"name":"multiWebMssdkSamePage","type":"event","metrics":{"count":1},"categories":{"versions":"[\"https://sf16-web-login-neutral.capcutstatic.com/obj/capcut-web-login-static/webmssdk_cctbc/1.0.0.71/webmssdk.js\"]","page":"https://www.capcut.com/login-embed?scene=custom&sdk_login_preset=1&col=1&sdk_preload=1&title_key=ccug_web_signinUpd_sign_titleTemp","scmVersion":"1.0.0.79","sdkVersion":"5.2.1"}},"common":{"bid":"webmssdk","user_id":"c919...
+  POST https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=growth_capcut_seo
+    body: {"ev_type":"batch","list":[{"ev_type":"http","payload":{"api":"xhr","request":{"url":"https://mcs-normal-sg.capcutapi.com/list","method":"post","headers":{"content-type":"application/json; charset=utf-8"},"timestamp":1786320200538},"response":{"status":200,"is_custom_error":false,"timestamp":1786320200561,"headers":{"cache-control":"max-age=0, no-cache, no-store","content-length":"21","content-type":"application/json; charset=utf-8","expires":"Mon, 10 Aug 2026 00:03:20 GMT","pragma":"no-cache","...
+
+=== JSON Responses ===
+  [200] https://mcs-normal-sg.capcutapi.com/webid
+    body: {"e":0,"web_id":"7672186810416219649"}
+  [200] https://www.capcut.com/lv/v1/user/web/user_info
+    body: {"ret":"1015","errmsg":"check login error","svr_time":1786320195,"log_id":"20260810080315134721C21D22DC5483FB"}
+  [200] https://www.capcut.com/lv/v1/user/web/get_user_info
+    body: {"ret":"1015","errmsg":"check login error","svr_time":1786320195,"log_id":"202608100803156A94640849D2D6551CD1","svr_timing":null}
+  [200] https://mon-sg.capcutapi.com/monitor_web/settings/browser-settings?bid=growth_capcut_seo&store=1
+    body: {"data":{"sample":{"sample_rate":1,"include_users":[],"sample_granularity":"session","rules":[{"name":"js_error","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"http","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"performance","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"resource_error","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"resource","enable":true,"sample_rate":0.1,"conditional_sample_rules":[]},{"name":"custom","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"performance_timing","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"performance_longtask","enable":true,"sample_rate":0.01,"conditional_sample_rules":[]},{"name":"pageview","enable":true,"sa
+  [200] https://www.capcut.com/ttwid/check/
+    body: {"status_code":0,"message":"check pass","sub_status_code":2001}
+  [200] https://mon-sg.capcutapi.com/monitor_web/settings/browser-settings?bid=webmssdk&store=1
+    body: {"data":{"sample":{"sample_rate":1,"include_users":[],"sample_granularity":"session","rules":[{"name":"js_error","enable":true,"sample_rate":0.01,"conditional_sample_rules":[]},{"name":"http","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"performance","enable":true,"sample_rate":0.01,"conditional_sample_rules":[{"sample_rate":0.0001,"filter":{"type":"and","children":[{"type":"rule","field":"payload.name","op":"eq","groupKey":"","values":["inp"]}]}},{"sample_rate":0.006182,"filter":{"type":"and","children":[{"type":"rule","field":"payload.name","op":"eq","groupKey":"","values":["cls"]}]}}]},{"name":"resource_error","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"resource","enable":true,"sample_rate":0.1,"conditional_sample_rules":[]},{"name":"cus
+  [200] https://starling-normal-sg.capcutapi.com/check_and_get_text/38d171503ca311ee866b4ff6c924e0e2/normal/WebClient?lang=en,zh
+    body: {"message":{"Data":{"({placeholder1})_selected":"({placeholder1}) selected","169_web_tt_web_video":"16:9 (TikTok videos)","169_web_yyb_web_video":"16:9 (YouTube videos)","Add_tiktok_for_business_account":"Add TikTok for Business account","CCweb_christmascampaigntemplate_tite":"Free Christmas templates for your all-platform promotion!","CSSFULLSCREEN_TIPS":"Cssfullscreen","C_to_B_2":"C to B template","Compliance_title_australianonlinesafety":"Australian Online Safety","Continue":"Continue","Counting":"Resend code after {seconds}s","DOWNLOAD_TIPS":"Download","DYD_cancelExport_popUpCTA1_btn":"Go back","DYD_cancelExport_popUpCTA2_btn":"Cancel export","DYD_cancelExport_popUp_body":"Your data will stop exporting and you won’t receive a copy of any unfinished files. You can request your data agai
+  [204] https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?bid=capcut_pns_web_runtime
+    body: 
+  [200] https://www.capcut.com/api/v1/web-cookie-privacy/config?locale=zh-Hant-TW&appId=348188&theme=default&tea=0
+    body: {"statusCode":200,"body":{"i18n":{"cookieBannerTitle":"要在這個瀏覽器中接受 CapCut 的 Cookie 嗎？","cookieBannerSubTitle":"CapCut 使用 Cookie 和類似技術來提供、改善、保護、分析及行銷我們的服務。按一下「全部接受」即表示您同意我們使用第一方和第三方 Cookie 來進行分析及衡量。按一下「全部拒絕」即表示您拒絕我們將 Cookie 用於這些額外用途。您可以隨時<a href=\"https://www.capcut.com/cookie-settings?lang=zh-Hant-TW\" target=\"_blank\" rel=\"noopener noreferrer\">管理您的 Cookie</a>。更多詳情請參閱我們的<a href=\"https://www.capcut.com/clause/cookies-policy?lang=zh-Hant-TW\" target=\"_blank\" rel=\"noopener noreferrer\">Cookie 政策</a>。","cookieBannerBtnAccept":"全部接受","cookieBannerBtnDecline":"全部拒絕","cookieBannerSaveToast":"已儲存！","cookieSettingSaveBtn":"儲存","cookieSettingsTitle":"管理 Cookie","cookieSettingsSubTitle":"您可以變更 Cookie 設定以接受或拒絕以下的某些 Cookie 和類似技術。您也可以按一下箭頭或查看 [CapCut 的 Cookie 政策](https://capcut.com/clause/cookies-
+  [200] https://www.capcut.com/luckycat/i18n/capcut/thirdpatry_share/v1/landing_page/get_similar_templates?template_id=7617043391162928401&keyword=creator+search+insights&tabs=video&region_code=tw&language=zh-tw&cursor=&size=20
+    body: {"data":{"video_template_list":{"video_template_list":[{"template_id":"7580483905623559477","cover_url":"https://p16-capcut-sign-sg.ibyteimg.com/tos-alisg-v-643f9f/oMvC5EruI9AAA1NBAYAITikxDLzu6aRrkMTAi~tplv-4d650qgzx3-1:250:0.webp?lk3s=44acef4b\u0026x-expires=1817856196\u0026x-signature=b7kDPmfGrsWDUNSF0e7lU56P2RE%3D","title_desc":"#paradise#googlesearch#fyp#trend#viral","use_count":253713,"like_count":13603,"comment_count":122,"author":{"name":"","avatarUrl":"","description":"","profileUrl":"","secUid":"","uid":0},"template_url":"","template_duration":16600,"title":"google search","video_ratio":"","video_url":"https://v16-vod.capcutvod.com/fce913c46598f48585bb825276f385a8/6a7d09d4/video/tos/alisg/tos-alisg-ve-8fe9aq-sg/ogodOggDSCTsgBkFEEepaFQCdD3zfZoAObIC0f/?a=3006\u0026bti=cHJ3bzFmc3dmZE
+  [200] https://www.capcut.com/manifest.json
+    body: {"short_name":"CapCut Web","name":"CapCut Web","background_color":"#121217","scope":"/","start_url":"/my-edit?is_pwa=1","display":"standalone","theme_color":"#121217","icons":[{"src":"https://sf16-web-tos-buz.capcutcdn-us.com/obj/capcut-web-buz-tx/pwa/512.png","sizes":"512x512","type":"image/png"},{"src":"https://sf16-web-tos-buz.capcutcdn-us.com/obj/capcut-web-buz-tx/pwa/128.png","sizes":"128x128","type":"image/png"},{"src":"https://sf16-web-tos-buz.capcutcdn-us.com/obj/capcut-web-buz-tx/pwa/64.png","sizes":"64x64","type":"image/png"},{"src":"https://sf16-web-tos-buz.capcutcdn-us.com/obj/capcut-web-buz-tx/pwa/48.png","sizes":"48x48","type":"image/png"},{"src":"https://sf16-web-tos-buz.capcutcdn-us.com/obj/capcut-web-buz-tx/pwa/32.png","sizes":"32x32","type":"image/png"},{"src":"https://sf
+  [200] https://starling-normal-sg.capcutapi.com/check_and_get_text/2e1fcc60aeaa11e99ef535aeebd27c9b/normal/H5?lang=en,en
+    body: {"message":{"Data":{"ACE_Items_not_received":"Items not received","ACE_description_not_received_toast":"Provide details about your experience with this ad to help us take necessary action. Please upload images of order details(including order date, order item)","ACE_description_toast":"Provide details about your experience with this ad to help us take necessary action. Please upload images of order details and items received.","AI_Agent_IAB_half_screen_answers_Popular_items":"Popular items","AI_Agent_IAB_half_screen_answers_brand_info":"Info","AI_Agent_IAB_half_screen_answers_coupon":"Eligible promotions","AI_Agent_IAB_half_screen_answers_coupon_copy":"Eligible promotions","AI_Agent_IAB_half_screen_answers_fail":"Oops, seems like something went wrong. Try again?","AI_Agent_IAB_half_screen_
+  [200] https://vcs-sg.capcutapi.com/vc/setting?aid=348188
+    body: {"common":{"period":1800000,"alpha":"0.5","retry_count":3,"retry_interval":2000,"rgb":"000000","skip_launch":0,"use_jsb_request":0,"pre_create":0,"request_encrypt":0,"host":{"cn":"","ie":"https://vcs-sg.tiktokv.com/","in":"https://vcs-sg.tiktokv.com/","no1a":"https://vcs-sg.tiktokv.com/","sg":"https://vcs-sg.tiktokv.com/","ttp":"https://vcs-sg.tiktokv.com/","ttp2":"https://vcs-sg.tiktokv.com/","useastred":"https://vcs-sg.tiktokv.com/","va":"https://vcs-va.tiktokv.com/"},"back_up_host":{"cn":"","ie":"https://vcs16-normal-ie.tiktokv.eu/","in":"https://vcs-i18n.tiktokv.com/","no1a":"https://vcs16-normal-no1a.tiktokv.eu/","sg":"https://vcs-sg.tiktokv.com/","ttp":"https://vcs16-normal-useast5.tiktokv.us/","ttp2":"https://vcs16-normal-useast8.tiktokv.us/","useastred":"https://vcs16-normal-useast
+  [200] https://mon-sg.capcutapi.com/monitor_web/settings/browser-settings?bid=pns_cookie_banner_slardar&store=1
+    body: {"data":{"sample":{"sample_rate":1,"include_users":[],"sample_granularity":"session","rules":[{"name":"js_error","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"http","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"performance","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"resource_error","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"resource","enable":true,"sample_rate":0.1,"conditional_sample_rules":[]},{"name":"custom","enable":true,"sample_rate":1,"conditional_sample_rules":[{"sample_rate":1,"filter":{"type":"and","children":[{"type":"rule","field":"payload.name","op":"eq","groupKey":"","values":["pns_cuj"]}]}}]},{"name":"performance_timing","enable":true,"sample_rate":1,"conditional_sample_rule
+  [204] https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=webmssdk
+    body: 
+  [200] https://mcs-normal-sg.capcutapi.com/tobid
+    body: {"e":0,"tobid":"un_support"}
+  [200] https://mcs-normal-sg.capcutapi.com/list
+    body: {"e":0,"sc":5,"tc":5}
+  [200] https://vmweb-normal-sg.capcutapi.com/service/2/abtest_config/
+    body: {"data":{"_capcut_ug_for_test_ab":{"val":{"value":2},"vid":"121358992"},"ai_captions_entry":{"val":{"enable":true,"initialSidePanelTab":"style"},"vid":"121821450"},"ai_creator_canvas_agent_v2":{"val":true,"vid":"75720610"},"ai_creator_default_manual_script":{"val":false,"vid":"74464691"},"ai_creator_embedded":{"val":true,"vid":"75782510"},"ai_creator_go_to_editor":{"val":true,"vid":"76725799"},"ai_creator_image_card_enable_progressive_display_url":{"val":false,"vid":"76562741"},"ai_creator_short_dh":{"val":true,"vid":"121506333"},"ai_creator_skill_suggestion":{"val":false,"vid":"76525777"},"ai_creator_start":{"val":true,"vid":"121652918"},"ai_creator_template_show":{"val":true,"vid":"122055656"},"ai_creator_trial":{"val":true,"vid":"121492331"},"ai_creator_undo_redo":{"val":true,"vid":"121
+  [200] https://mcs-normal-sg.capcutapi.com/list
+    body: {"e":0,"sc":3,"tc":3}
+  [200] https://mssdk-sg.capcutapi.com/web/resource?eq=bwRDytRenOAESxJNlD1oBxUOc/N8WImXmpr9BNeW7hCN3j0vhVvfajr0fGV2EpgLA16--q4tDq2YbfXl6clzPD==
+    body: {"code":0,"content":"qC1Ofz2wetQy7PhSVdSTc1VIXY37O/G8bskziSu8YtDjEoA9Q4f92SjEiiws8WEZEfAjVb0pGr3YCW8VBlNLjZKwm1voLfVL6iIZueR73rvN20wBgNv0YyOs1P2CeD8YdrLKFi9z1ZM6FAr5viR3SKDZ114RDP/O/29NZeir/wrICi7LLEvWSL57clq5A5CuhUCX2bPDLihg990YrAVGPgk/6QrkquAWvvgl7+TJVDO+RkmaSYY5jngGx5LXxweKo+TLAXQ678TPBRp0qbY/Fxcj+Fjje67EGLQe+a7s8DFIkwDo3Hf90JTENrkpqLm6LKX8rgEmIxQDhQ8LridFh5b25ZHwKzpG25El8TBO0SZFX54w4jfMYvKg7nSI8SAPdVpHE6WNf526TAi44F7SBD9Bmbu+SA1QRVCF5fVtgJMprG/er076QeHxrIQIl0MiicK7VAT5aasDWXVtKciPlx9lG9y8wPCkxZcm4CBb5B4YvJ8QfOy5LxD+k/6ZyxhoGEIGZgshKAgPGk56LQZsYDemHwORcK9W/ksquUiFLLs9WdHOpOl0VXiguXffzdM="}
+  [200] https://mon-sg.capcutapi.com/monitor_web/settings/browser-settings?bid=webmssdk&store=1
+    body: {"data":{"sample":{"sample_rate":1,"include_users":[],"sample_granularity":"session","rules":[{"name":"js_error","enable":true,"sample_rate":0.01,"conditional_sample_rules":[]},{"name":"http","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"performance","enable":true,"sample_rate":0.01,"conditional_sample_rules":[{"sample_rate":0.0001,"filter":{"type":"and","children":[{"type":"rule","field":"payload.name","op":"eq","groupKey":"","values":["inp"]}]}},{"sample_rate":0.006182,"filter":{"type":"and","children":[{"type":"rule","field":"payload.name","op":"eq","groupKey":"","values":["cls"]}]}}]},{"name":"resource_error","enable":true,"sample_rate":1,"conditional_sample_rules":[]},{"name":"resource","enable":true,"sample_rate":0.1,"conditional_sample_rules":[]},{"name":"cus
+  [200] https://mcs-normal-sg.capcutapi.com/list
+    body: {"e":0,"sc":1}
+  [204] https://mon-sg.capcutapi.com/monitor_browser/collect/batch/
+    body: 
+  [204] https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=pns_cookie_banner_slardar
+    body: 
+  [204] https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=webmssdk
+    body: 
+  [204] https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=webmssdk
+    body: 
+  [204] https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=growth_capcut_seo
+    body: 
+  [200] https://mcs-normal-sg.capcutapi.com/list
+    body: {"e":0,"sc":1,"tc":1}
+  [204] https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=webmssdk
+    body: 
+  [204] https://mon-sg.capcutapi.com/monitor_browser/collect/batch/?biz_id=growth_capcut_seo
+    body: 
+
+=== window.__* state ===
+  __LOADABLE_LOADED_CHUNKS__: [[["2072"],{}],[["3361"],{}],[["2126"],{}],[["2118"],{}],[["4689"],{}],[["7841"],{}],[["9118"],{},null],[["5817"],{}],[["6117"],{}],[["9279"],{}],[["7865"],{}],[["4583"],{}],[["8019"],{}],[["2902"],{}],[["1343"],{}],[["3717"],{}],[["5842"],{}],[["1830"],{}],[["8740"],{}],[["9276"],{}],[["5746"],{}],[["969"],{}],[["4779"],{}],[["3854"],{}],[["9678"],{}],[["8594"],{}],[["5049"],{}]]
+  __GTW_AGW_INFO__: {"__agw_env":"canary","__agw_is_ppe":false,"__agw_log_id":"2026081008031415E576412519A74DEB18","__agw_timestamp":1786320194,"__agw_psm":"ies.lvweb_os.ug","__agw_cluster":"default","__agw_idc":"sg1"}
+  __STARLING_INCONTEXT_GLOBAL__HOOK__: {"payload":{}}
+  __STARLING_DEVTOOLS_I18N: [unserializable]
+  __SLARDAR_REGISTRY__: {"Slardar":{"plugins":[{"name":"pageview","version":"1.14.1"},{"name":"ajax","version":"1.14.1"},{"name":"fetch","version":"1.14.1"},{"name":"pageview","version":"1.14.5"},{"name":"ajax","version":"1.14.5"},{"name":"fetch","version":"1.14.5"},{"name":"breadcrumb","version":"1.14.5"},{"name":"jsError","version":"1.14.5"},{"name":"performance","version":"1.14.5"},{"name":"resourceError","version":"1.14.5"},{"name":"resource","version":"1.14.5"},{"name":"breadcrumb","version":"1.14.1"},{"name":"jsE
+  __GTW_LOGIN_STATUS__: {"__isLogined":false}
+  __G_ID_CLIENT__: [unserializable]
+  __clr: {}
+  __PixelManager__: [unserializable]
+
+saved to ./tmp/template-page-capture.json

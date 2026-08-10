@@ -52,7 +52,7 @@ const APP_ID = 348188;
  * @param {Object} opts - { pf, appvr, tdid, deviceTime }
  * @returns {string} 32-char MD5 hex
  */
-function calcSign(urlPath, { pf = '7', appvr = '5.8.0', tdid = '', deviceTime } = {}) {
+function calcSign(urlPath, { pf = '7', appvr = '15.4.0', tdid = 'web', deviceTime } = {}) {
   const u = urlPath.length >= 7 ? urlPath.slice(-7) : urlPath;
   const ts = deviceTime || Math.floor(Date.now() / 1000);
   const payload = `9e2c|${u}|${pf}|${appvr}|${ts}|${tdid}|11ac`;
@@ -67,15 +67,18 @@ const DEFAULT_HEADERS = {
   'Referer': 'https://www.capcut.com/',
   'appid': String(APP_ID),
   'pf': '7',
-  'appvr': '5.8.0',
+  // appvr=15.4.0 and app-sdk-version=127.0.0 are the values the real CapCut web editor sends
+  // (verified from runtime capture api-capture-v3.jsonl, seq 83). Older values (5.8.0/48.0.0)
+  // worked for /cc/v1/workspace/get_user_workspaces but newer endpoints reject them.
+  'appvr': '15.4.0',
   'loc': 'sg',
-  'lan': 'en',
+  'lan': 'en-US',
   'sign-ver': '1',
-  'app-sdk-version': '48.0.0',
+  'app-sdk-version': '127.0.0',
   'store-country-code': 'id',
   'store-country-code-src': 'uid',
   'did': '7671997128840021525', // web/device ID
-  'tdid': '',
+  'tdid': 'web',
 };
 
 const KNOWN = {
@@ -214,36 +217,128 @@ export class CapCutDirectAPI {
 
   /**
    * Step 2: Save draft (create or update).
-   * @param {Object} content - draft content (from getTemplateFile or modified)
-   * @param {Object} opts - { draft_id?: string, video_name?: string }
-   * @returns {Promise<{draft_id: string, ...}>}
+   *
+   * VERIFIED body schema (from bundle-035.js offset 451051 + live test on production):
+   *   - package_key: the draft ID (we generate this, e.g. timestamp + random)
+   *   - template_data: the draft JSON serialized as a string
+   *   - template_meta: JSON.stringify({draft, uploadSource, createSource})
+   *   - package_type: 5 (constant for plane drafts)
+   *   - base_package_id: "0" for first save, ticket value for updates
+   *   - package_assets/referenced_assets: arrays of {source_path, md5, size}
+   *   - materials: the materials object
+   *   - user_actions: "{}"
+   *   - cover_image_content: base64 (without data: prefix)
+   *   - page_covers: array of {data, source_path}
+   *
+   * KEY: The server returns a `package_id` (different from package_key).
+   * Use the ORIGINAL package_key for get_draft_detail.
+   * Use BOTH package_key (as draft_id) AND returned package_id for render_task/create.
+   *
+   * @param {Object} content - draft content object (will be JSON.stringified as template_data)
+   * @param {Object} opts - { packageKey?, videoName?, materials?, coverBase64? }
+   * @returns {Promise<{package_key: string, package_id: string, raw: Object}>}
    */
-  async saveDraft(content, { draftId, videoName } = {}) {
+  async saveDraft(content, { packageKey, videoName, materials, coverBase64, packageAssets } = {}) {
     await this._init();
-    logger.info({ draftId, hasContent: !!content }, 'saveDraft');
+    // Generate package_key if not provided
+    const pkgKey = packageKey || String(Date.now()) + Math.floor(Math.random() * 1000);
+    logger.info({ packageKey: pkgKey, hasContent: !!content }, 'saveDraft');
+
+    const draftData = typeof content === 'string' ? content : JSON.stringify(content);
+    const meta = {
+      draft: {
+        id: pkgKey,
+        name: videoName || 'CapCut Render',
+        type: 5,
+        duration: 0,
+        updateTime: Date.now(),
+        size: draftData.length,
+        segmentCount: 0,
+        version: '1.0.0',
+        platformSupport: 'browser',
+        isMainTrackEmpty: !content?.tracks?.length,
+        isScriptTemplate: false,
+        renderIndexTrackMode: false,
+        canvasInfo: {
+          width: content?.canvas_config?.width || 1080,
+          height: content?.canvas_config?.height || 1920,
+          sizeUnit: 'px',
+          pageInfoList: [{
+            width: content?.canvas_config?.width || 1080,
+            height: content?.canvas_config?.height || 1920,
+            sizeUnit: 'px',
+            unit: 'px',
+          }],
+        },
+        coverUrl: 'cover.jpg',
+        cover: 'cover.jpg',
+        graphicInfo: { isUseInCn: false, isBatch: false },
+      },
+      uploadSource: {
+        owner: this.userId,
+        platform: 'browser',
+        systemVersion: 'Mozilla/5.0',
+        appVersion: '1.0.0',
+        createTime: Date.now(),
+      },
+      createSource: {
+        owner: this.userId,
+        platform: 'browser',
+        systemVersion: 'Mozilla/5.0',
+        appVersion: '1.0.0',
+        createTime: Date.now(),
+      },
+    };
+
     const body = {
       workspace_id: this.workspaceId,
-      content: typeof content === 'string' ? content : JSON.stringify(content),
-      draft_id: draftId || '',
-      video_name: videoName || 'CapCut Render',
-      platform: 'web',
-      sdk_version: '127.0.0',
+      package_type: 5,
+      package_key: pkgKey,
+      base_package_id: '0',
+      template_data: draftData,
+      template_meta: JSON.stringify(meta),
+      package_assets: packageAssets || [],
+      referenced_assets: packageAssets || [],
+      materials: materials || content?.materials || {},
+      user_actions: '{}',
+      cover_image_content: coverBase64 || '',
+      page_covers: coverBase64 ? [{ data: coverBase64, source_path: 'cover.jpg' }] : [],
     };
+
     const res = await this._axios.post(
       `${HOSTS.EDIT}/lv/v1/editor/plane_draft/save`,
       body
     );
-    return this._unwrap(res.data);
+    const data = this._unwrap(res.data);
+    return {
+      package_key: pkgKey,        // the ORIGINAL key we generated — use for get_draft_detail
+      package_id: data.package_id, // the server-assigned ID — use for render_task/create
+      raw: data,
+    };
   }
 
   /**
    * Step 2b: Get draft detail.
+   *
+   * KEY: Use the ORIGINAL package_key (the one we generated in saveDraft),
+   * NOT the package_id returned by saveDraft.
+   *
+   * Body schema (from bundle-035.js):
+   *   {package_key, app_version, sdk_version, lang, region, workspace_id, package_asset_limit:30}
    */
-  async getDraftDetail(draftId) {
+  async getDraftDetail(packageKey) {
     await this._init();
     const res = await this._axios.post(
       `${HOSTS.EDIT}/lv/v1/editor/plane_draft/get_draft_detail`,
-      { draft_id: draftId, workspace_id: this.workspaceId }
+      {
+        package_key: packageKey,
+        app_version: '5.8.0',
+        sdk_version: '16.1.0',
+        lang: 'en-US',
+        region: 'ID',
+        workspace_id: this.workspaceId,
+        package_asset_limit: 30,
+      }
     );
     return this._unwrap(res.data);
   }
@@ -379,18 +474,29 @@ export class CapCutDirectAPI {
 
   /**
    * Step 6: Create render task.
+   *
+   * VERIFIED body schema (from bundle-018.js offset 96764 + live test on production):
+   *   - BOTH draft_id AND package_id are required for the task to be created.
+   *   - draft_id = the ORIGINAL package_key we generated in saveDraft()
+   *   - package_id = the package_id returned by saveDraft()
+   *   - NO submit_id field (that's for a different endpoint, createExportTask)
+   *   - If only draft_id or only package_id is provided, returns ret=1000 "param error".
+   *
    * @param {Object} opts
-   *   - draft_id (required)
-   *   - video_name (default 'CapCut Render')
-   *   - definition (default '1080p') — 480p/720p/1080p
-   *   - width, height, fps (defaults from template)
+   *   - draftId (required) — the original package_key from saveDraft
+   *   - packageId (required) — the package_id returned by saveDraft
+   *   - videoName (default 'CapCut Render')
+   *   - definition (default '720p') — 480p/720p/1080p
+   *   - width, height, fps (defaults: 1080x1920 @ 30fps)
    *   - format (default 'mp4')
-   * @returns {Promise<{task_id, submit_id}>}
+   *   - duration (default 10000, in ms)
+   * @returns {Promise<{task_id, miss_materials, raw}>}
    */
   async createRenderTask({
     draftId,
+    packageId,
     videoName = 'CapCut Render',
-    definition = '1080p',
+    definition = '720p',
     width = 1080,
     height = 1920,
     fps = 30,
@@ -399,9 +505,9 @@ export class CapCutDirectAPI {
     cover = '',
   } = {}) {
     await this._init();
-    if (!draftId) throw new Error('draftId required');
+    if (!draftId) throw new Error('draftId required (use the original package_key from saveDraft)');
+    if (!packageId) throw new Error('packageId required (use the package_id returned by saveDraft)');
 
-    const submitId = `${Date.now()}_${Math.random()}`;
     const body = {
       app_version: '1.0.0.285',
       sdk_version: '127.0.0',
@@ -420,7 +526,7 @@ export class CapCutDirectAPI {
       task_id: '',
       video_name: videoName,
       draft_id: draftId,
-      package_id: '',
+      package_id: packageId,
       video_id: '',
       video_path: '',
       group_id: '',
@@ -428,24 +534,38 @@ export class CapCutDirectAPI {
       from_workspace_id: this.workspaceId,
       to_workspace_id: this.workspaceId,
       force_export: false,
-      submit_id: submitId,
     };
 
-    logger.info({ draftId, definition, videoName, submitId }, 'createRenderTask');
+    logger.info({ draftId, packageId, definition, videoName }, 'createRenderTask');
     const res = await this._axios.post(
       `${HOSTS.EDIT}/lv/v1/render_task/create`,
       body
     );
     const data = this._unwrap(res.data);
+    if (String(data.task_id) === '0') {
+      throw new Error(`render_task/create returned task_id=0 (not created). ret=${res.data?.ret} errmsg=${res.data?.errmsg}`);
+    }
     return {
       task_id: data.task_id,
-      submit_id: submitId,
+      miss_materials: data.miss_materials,
       raw: data,
     };
   }
 
   /**
    * Step 7: Poll render task status.
+   *
+   * VERIFIED response format (from live test on production):
+   *   The batch_get response data is a DICT keyed by task_id, e.g.:
+   *   { "7672189146483589121": { id, status, progress, video_url, ... } }
+   *
+   * Status values observed:
+   *   0  = waiting/queued
+   *   1  = processing (progress 1-99)
+   *   2  = success (video_url will be set)
+   *   -1 = failed (check render_ret_code / task_err_code)
+   *   4  = canceled
+   *
    * @param {string} taskId
    * @param {Object} opts - { intervalMs, timeoutMs, onProgress }
    * @returns {Promise<{status, video_url, progress, raw}>}
@@ -463,22 +583,36 @@ export class CapCutDirectAPI {
         { task_ids: [taskId] }
       );
       const data = this._unwrap(res.data);
-      const taskInfo = (data.tasks || data.task_list || [])[0] || data;
-      const status = taskInfo.status || taskInfo.state;
+      // Response format: data is a dict keyed by task_id, OR data.tasks array, OR data itself
+      let taskInfo = null;
+      if (data && typeof data === 'object' && data[taskId]) {
+        taskInfo = data[taskId];
+      } else if (Array.isArray(data.tasks) && data.tasks.length > 0) {
+        taskInfo = data.tasks[0];
+      } else if (Array.isArray(data.task_list) && data.task_list.length > 0) {
+        taskInfo = data.task_list[0];
+      } else if (data && (data.status !== undefined || data.id)) {
+        taskInfo = data;
+      }
+
+      if (!taskInfo) {
+        logger.warn({ taskId, dataKeys: Object.keys(data || {}) }, 'pollRenderTask: no task info found');
+        await new Promise(r => setTimeout(r, intervalMs));
+        continue;
+      }
+
+      const status = taskInfo.status ?? taskInfo.state;
       const progress = taskInfo.progress || 0;
       const videoUrl = taskInfo.video_url || taskInfo.video?.url || taskInfo.download_url;
 
       logger.info({ taskId, status, progress, hasUrl: !!videoUrl }, 'pollRenderTask');
 
       if (onProgress) {
-        try { onProgress({ status, progress, videoUrl }); } catch {}
+        try { onProgress({ status, progress, videoUrl, raw: taskInfo }); } catch {}
       }
 
-      // Status values: 0=waiting, 1=processing, 2=success, 3=failed, 4=canceled (typical)
+      // Status: 2=success, -1=failed, 4=canceled
       if (status === 2 || status === 'success' || status === 'done' || status === 'completed') {
-        if (!videoUrl) {
-          logger.warn({ taskInfo }, 'pollRenderTask: status done but no video URL');
-        }
         return {
           status: 'completed',
           progress: 100,
@@ -486,8 +620,11 @@ export class CapCutDirectAPI {
           raw: taskInfo,
         };
       }
-      if (status === 3 || status === 'failed' || status === 'error') {
-        throw new Error(`Render failed: ${JSON.stringify(taskInfo)}`);
+      if (status === -1 || status === 3 || status === 'failed' || status === 'error') {
+        const errMsg = `Render failed: status=${status} ret_code=${taskInfo.render_ret_code || ''} err_code=${taskInfo.task_err_code || ''}`;
+        const err = new Error(errMsg);
+        err.taskInfo = taskInfo;
+        throw err;
       }
       if (status === 4 || status === 'canceled') {
         throw new Error('Render canceled');
