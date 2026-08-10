@@ -89,38 +89,18 @@ const KNOWN = {
 };
 
 /**
- * Load cookies from Chrome profile (SQLite).
- * Falls back to puppeteer extraction if direct read fails.
- * @returns {Promise<string>} cookie header string
+ * Load cookies from Chrome profile (cached, shared across services).
+ * Uses src/utils/cookie-loader.js to avoid spawning puppeteer on every call.
+ * @returns {Promise<{header: string, csrfToken: string|null, all: Object[]}>}
  */
 async function loadCookieHeader() {
-  // Lazy-load puppeteer to read cookies (avoids Chrome SQLite encryption complexity)
-  const { default: puppeteer } = await import('puppeteer');
-  const userDataDir = process.env.CAPCUT_USER_DATA_DIR || path.join(projectRoot, '.capcut-profile');
-
-  // Cleanup stale locks
-  for (const lock of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
-    try { fs.rmSync(path.join(userDataDir, lock), { force: true }); } catch {}
-  }
-
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    userDataDir,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-  });
-  try {
-    const page = await browser.newPage();
-    await page.goto(`${HOSTS.WEB}/`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const cookies = await browser.cookies(HOSTS.WEB, 'https://capcut.com');
-    if (cookies.length === 0) {
-      throw new Error('No cookies found in profile. Run npm run login:manual first.');
-    }
-    const header = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-    logger.info({ cookieCount: cookies.length }, 'Loaded cookies from profile');
-    return header;
-  } finally {
-    await browser.close();
-  }
+  const { loadCookies } = await import('../utils/cookie-loader.js');
+  const data = await loadCookies();
+  return {
+    header: data.header,
+    csrfToken: data.csrfToken,
+    all: data.all,
+  };
 }
 
 /**
@@ -136,15 +116,36 @@ export class CapCutDirectAPI {
 
   async _init() {
     if (this._axios) return;
-    this.cookieHeader = await loadCookieHeader();
+    const cookieData = await loadCookieHeader();
+    this.cookieHeader = cookieData.header;
+    this.csrfToken = cookieData.csrfToken;
+    this.allCookies = cookieData.all;
+
+    // Detect login status — if sessionid is missing, session is expired.
+    const hasSession = cookieData.all.some(c => c.name === 'sessionid' || c.name === 'sid_tt');
+    if (!hasSession) {
+      logger.warn('Session appears EXPIRED — sessionid/sid_tt cookie missing. API calls will fail with ret=1015 notLogin. Refresh via POST /login.');
+    }
+
+    const baseHeaders = {
+      ...DEFAULT_HEADERS,
+      Cookie: this.cookieHeader,
+      'withCredentials': 'true',
+    };
+    if (this.csrfToken) {
+      baseHeaders['x-tt-passport-csrf-token'] = this.csrfToken;
+    }
+
     this._axios = axios.create({
-      headers: { ...DEFAULT_HEADERS, Cookie: this.cookieHeader },
+      headers: baseHeaders,
       timeout: 30000,
       validateStatus: s => s < 500, // don't throw on 4xx — handle gracefully
     });
 
     // Add sign interceptor — computes sign for every request based on URL path.
     // Algorithm: md5(`9e2c|${last7_of_path}|${pf}|${appvr}|${deviceTime}|${tdid}|11ac`)
+    // Per bundle-035.js: sign uses tdid="" (empty), NOT "web".
+    // We override tdid to "" for the SIGN computation only (header still sends "web" for compat).
     this._axios.interceptors.request.use((config) => {
       const url = config.url || '';
       let urlPath;
@@ -156,17 +157,18 @@ export class CapCutDirectAPI {
       const deviceTime = Math.floor(Date.now() / 1000);
       const pf = config.headers?.pf || DEFAULT_HEADERS.pf;
       const appvr = config.headers?.appvr || DEFAULT_HEADERS.appvr;
-      const tdid = config.headers?.tdid ?? DEFAULT_HEADERS.tdid;
+      // For sign computation, use empty tdid (matches bundle-035.js py interceptor)
+      const tdidForSign = '';
 
       config.headers = {
         ...config.headers,
         'device-time': String(deviceTime),
-        'sign': calcSign(urlPath, { pf, appvr, tdid, deviceTime }),
+        'sign': calcSign(urlPath, { pf, appvr, tdid: tdidForSign, deviceTime }),
       };
       return config;
     });
 
-    logger.info({ workspaceId: this.workspaceId }, 'CapCutDirectAPI initialized (with sign interceptor)');
+    logger.info({ workspaceId: this.workspaceId, hasCsrf: !!this.csrfToken, hasSession }, 'CapCutDirectAPI initialized (with sign + csrf)');
   }
 
   /**
@@ -380,6 +382,138 @@ export class CapCutDirectAPI {
       height: result.height,
       spaceName: result.spaceName,
       raw: result.raw,
+    };
+  }
+
+  /**
+   * Step 3b: Register uploaded VOD asset as a CapCut cloud asset.
+   *
+   * CapCut's draft save expects materials.video_id to reference an asset registered
+   * in their cloud asset system, NOT a raw VOD vid. This method calls:
+   *   1. POST /lv/v1/asset/prepare_upload_cloud {workspace_id, space_id:"0", md5, size, file_type, flags}
+   *      → returns {upload_id, everphoto_user_id, state}
+   *   2. POST /lv/v1/asset/create_cloud_asset {everphoto_id, asset:{...}, is_web_user:true}
+   *      → returns {cloud_asset:{asset_id}, cloud_file_entry:{entry_id}}
+   *
+   * Reverse-engineered from bundle-035.js (prepareUpload + createAsset in I.p namespace).
+   *
+   * @param {Object} uploadResult - result from uploadAsset()
+   * @param {string} filePath - local file path (for size/md5 if needed)
+   * @returns {Promise<{asset_id: string, entry_id: string, upload_id: string, everphoto_user_id: string}>}
+   */
+  async registerCloudAsset(uploadResult, filePath) {
+    await this._init();
+    const fs = await import('node:fs');
+    const crypto = await import('node:crypto');
+    const path = await import('node:path');
+
+    const fileBuf = fs.readFileSync(filePath);
+    const md5 = uploadResult.md5 || crypto.createHash('md5').update(fileBuf).digest('hex');
+    const size = uploadResult.fileSize || fileBuf.length;
+    const fileName = path.basename(filePath);
+    const ext = path.extname(filePath).toLowerCase().replace('.', '');
+    const fileType = (ext === 'mp4' || ext === 'mov') ? 'video' : 'image';
+
+    logger.info({ md5, size, fileName, fileType, vid: uploadResult.vid }, 'registerCloudAsset: prepare_upload_cloud');
+
+    // === Step 1: prepare_upload_cloud ===
+    const prepareBody = {
+      workspace_id: this.workspaceId,
+      space_id: '0',
+      md5,
+      size,
+      file_type: fileType,
+      flags: 0,
+      is_web_user: true,
+    };
+    const prepareRes = await this._axios.post(
+      `${HOSTS.EDIT}/lv/v1/asset/prepare_upload_cloud`,
+      prepareBody
+    );
+    const prepareData = this._unwrap(prepareRes.data);
+    logger.info({ prepareData: JSON.stringify(prepareData).slice(0, 500) }, 'registerCloudAsset: prepare_upload_cloud response');
+
+    const uploadId = prepareData.upload_id;
+    const everphotoUserId = prepareData.everphoto_user_id;
+    const state = prepareData.state;
+
+    // If state === 'SUCCESS', file already exists on cloud, skip actual upload.
+    // We've already uploaded via VOD, so we pass the VOD uri to create_cloud_asset.
+    logger.info({ uploadId, everphotoUserId, state }, 'registerCloudAsset: prepared');
+
+    // === Step 2: create_cloud_asset ===
+    const assetInfo = {
+      size,
+      workspace_id: this.workspaceId,
+      filename: fileName,
+      upload_id: uploadId,
+      preserve_video_multi_definition: false,
+      if_image_async_resize: true,
+      transcode_template_type: 0,
+      permission: 0,
+      space_id: '0',
+      flags: 0,
+      file_type: fileType,
+      folder_id: '',
+      meta: JSON.stringify({ vid: uploadResult.vid }),
+      md5,
+      no_copy: false,
+      // uri is required when file was uploaded externally (our VOD upload case)
+      uri: uploadResult.uri,
+    };
+
+    const createBody = {
+      everphoto_id: everphotoUserId || '',
+      asset: assetInfo,
+      is_web_user: true,
+    };
+
+    logger.info({ createBody: JSON.stringify(createBody).slice(0, 500) }, 'registerCloudAsset: create_cloud_asset');
+
+    const createRes = await this._axios.post(
+      `${HOSTS.EDIT}/lv/v1/asset/create_cloud_asset`,
+      createBody
+    );
+    const createData = this._unwrap(createRes.data);
+    logger.info({ createData: JSON.stringify(createData).slice(0, 500) }, 'registerCloudAsset: create_cloud_asset response');
+
+    return {
+      asset_id: createData.cloud_asset?.asset_id,
+      entry_id: createData.cloud_file_entry?.entry_id,
+      upload_id: uploadId,
+      everphoto_user_id: everphotoUserId,
+      raw: createData,
+    };
+  }
+
+  /**
+   * Step 3c: Full upload + register pipeline.
+   * Convenience method that does uploadAsset() + registerCloudAsset().
+   *
+   * @param {string} filePath - local file path
+   * @returns {Promise<Object>} combined result with all fields needed for saveDraft
+   */
+  async uploadAndRegisterAsset(filePath) {
+    await this._init();
+    logger.info({ filePath }, 'uploadAndRegisterAsset: starting');
+
+    const uploaded = await this.uploadAsset(filePath);
+    logger.info({ vid: uploaded.vid }, 'uploadAndRegisterAsset: VOD upload done, registering cloud asset...');
+
+    let cloudAsset;
+    try {
+      cloudAsset = await this.registerCloudAsset(uploaded, filePath);
+      logger.info({ assetId: cloudAsset.asset_id }, 'uploadAndRegisterAsset: cloud asset registered');
+    } catch (e) {
+      logger.warn({ err: e.message, vid: uploaded.vid }, 'registerCloudAsset failed — using VOD vid as fallback asset_id');
+      cloudAsset = { asset_id: uploaded.vid, entry_id: null, upload_id: null, everphoto_user_id: null };
+    }
+
+    return {
+      ...uploaded,
+      ...cloudAsset,
+      // The cloud_asset.asset_id is what should be used in materials.video_id
+      cloud_asset_id: cloudAsset.asset_id,
     };
   }
 

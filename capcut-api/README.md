@@ -1,348 +1,263 @@
-# CapCut JJ API
+# CapCut JJ API v2.0
 
-Pure Node.js API untuk otomatisasi CapCut: ambil template, sisipkan 2+ gambar, render jadi video, dan hasilkan URL unduhan. Sepenuhnya otomatis menggunakan Puppeteer (headless Chromium) + Hono.
+Pure Node.js API untuk otomatisasi CapCut: list/search template, upload gambar, render jadi video via pure API (no browser editor for render step), dan serve hasilnya. Reverse-engineered langsung dari CapCut internal API.
 
-## Fitur
+## Architecture
 
-- **Template management**: list, search by keyword, get by URL/ID
-- **Render template**: sisipkan 2+ gambar ke template, CapCut render video
-- **Input fleksibel**: URL gambar, multipart upload, base64, atau mix
-- **Async job**: POST /render → return jobId → poll /status/:jobId → /download/:jobId
-- **Static serve**: video hasil disimpan lokal, di-serve via `/files/videos/*`
-- **Auth**: email/password, atau persistent userDataDir (login 1x pakai `manual-login.js`)
+**Two render pipelines available:**
 
-## Stack
+| Pipeline | Endpoint | Browser needed? | Status |
+|----------|----------|-----------------|--------|
+| **Direct API** (recommended) | `POST /render-direct` | ❌ NO browser for render step | ✅ Code complete, needs valid session |
+| **Browser editor** (legacy) | `POST /render` | ✅ Puppeteer + CapCut editor | ✅ Working with valid session |
 
-- Node.js 18+
-- Hono (HTTP framework)
-- Puppeteer (browser automation) — the only render path: drives the CapCut web editor directly
-- formidable (multipart parser)
-- axios (image download)
-- pino (logger)
+**Direct API pipeline** (reverse-engineered from bundle-035.js):
+1. `POST /lv/v1/upload_sign` → STS token
+2. VOD upload → `ApplyUploadInner` → upload bytes → `CommitUploadInner` → returns `vid` + `uri`
+3. `POST /lv/v1/asset/prepare_upload_cloud` → `upload_id`
+4. `POST /lv/v1/asset/create_cloud_asset` → `cloud_asset.asset_id`
+5. Build draft JSON with materials.videos[] using `asset_id`
+6. `POST /lv/v1/editor/plane_draft/save` → `package_id`
+7. `POST /lv/v1/render_task/create` → `task_id`
+8. `POST /lv/v1/render_task/batch_get` (poll) → `video_url`
+9. Download MP4 → serve via `/files/videos/*`
 
-> **No ffmpeg.** This project used to have an ffmpeg-based fallback composer; it
-> has been removed. Every render now goes through the CapCut editor in
-> Puppeteer, which means a valid logged-in session (via `npm run login:manual`)
-> is mandatory.
+**Auth**: Cookie-based (passport_csrf_token + sessionid + passport + sid_tt + ttwid). Sign each request with MD5 of `9e2c|${last7_of_path}|${pf}|${appvr}|${deviceTime}|${tdid}|11ac`.
 
-## Setup
-
-### 1. Install dependencies
+## Quick Start
 
 ```bash
-cd /home/z/my-project/capcut-api
+# 1. Install deps
 npm install
-```
 
-Puppeteer akan otomatis download Chromium (~300MB) saat install pertama.
-
-### 2. Konfigurasi environment
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env`, isi minimal:
-
-```dotenv
-PORT=7000
-PUBLIC_BASE_URL=http://localhost:7000
-CAPCUT_USER_DATA_DIR=./.capcut-profile
-# CAPCUT_EMAIL & PASSWORD bisa dikosongkan kalau sudah login via login:manual
-```
-
-### 3. (Rekomendasi) Login manual sekali untuk dapat session
-
-Email/password login rawan captcha. Lebih stabil: login 1x manual, simpan session:
-
-#### A. Di local/desktop (punya display)
-
-```bash
-npm run login:manual
-```
-
-Browser non-headless akan terbuka. Login CapCut via QR atau email. Setelah terdeteksi login, session tersimpan ke `./.capcut-profile`. Lalu update `.env`:
-
-#### B. Di server headless (VPS/Railway/Docker tanpa X server)
-
-Script `manual-login.js` otomatis pakai mode headless kalau env `DISPLAY` kosong, dan menjalankan HTTP server kecil di port 3001 untuk serve screenshot QR code.
-
-**Langkah 1 — Install system deps (sekali saja):**
-
-```bash
-bash scripts/install-deps.sh
-# atau
-npm run deps:install
-```
-
-**Langkah 2 — Buka SSH tunnel di laptop lokal kamu:**
-
-```bash
-# Di terminal lokal (bukan server), buka tunnel port 3001
-ssh -L 3001:localhost:3001 root@sakura.proxy.rlwy.net -p 39551
-# Masukkan password server (Wifi.id123)
-# Biarkan terminal ini terbuka
-```
-
-**Langkah 3 — Jalankan login di server:**
-
-```bash
-# Di terminal server
-npm run login:manual
-```
-
-Output log akan menampilkan:
-```
-HTTP QR viewer listening on http://0.0.0.0:3001/
-1. Di terminal lokal (laptop), buka SSH tunnel:
-     ssh -L 3001:localhost:3001 root@sakura.proxy.rlwy.net -p 39551
-2. Di browser lokal, buka: http://localhost:3001/
-3. Scan QR code yang muncul pake aplikasi CapCut di HP
-4. Script akan auto-detect login & save session
-```
-
-**Langkah 4 — Buka http://localhost:3001/ di browser lokal, scan QR:**
-
-Page akan auto-refresh setiap 2 detik. Buka aplikasi CapCut di HP → menu Profile → icon Scan di kanan atas → arahkan ke QR code di browser.
-
-**Langkah 5 — Tunggu script detect login:**
-
-Setelah QR di-scan dan dikonfirmasi di HP, script otomatis detect login (via cookies, URL change, atau avatar element), save session ke `.capcut-profile/`, dan exit.
-
-**Troubleshooting server headless:**
-
-- **Error `Missing X server or $DISPLAY`** → pastikan pakai versi script terbaru (sudah auto-detect DISPLAY)
-- **Error `Failed to connect to bus /run/dbus/system_bus_socket`** → install dbus: `apt-get install -y dbus`
-- **Port 3001 sudah dipakai** → set `CAPCUT_LOGIN_PORT=3002` sebelum `npm run login:manual`
-- **Chromium launch gagal (missing libs)** → run `bash scripts/install-deps.sh` lagi
-- **QR tidak muncul di page** → script otomatis capture full page screenshot sebagai fallback; cek `/qr` endpoint
-
-Lalu update `.env`:
-
-```dotenv
-CAPCUT_USER_DATA_DIR=./.capcut-profile
-# CAPCUT_EMAIL & PASSWORD bisa dikosongkan
-```
-
-### 4. Jalankan API
-
-```bash
+# 2. Start server (port 7000 by default, auto-fallback to 3002-3010)
 npm start
-# atau untuk dev (auto-reload)
-npm run dev
+
+# 3. Open login form in browser
+open http://localhost:7000/login
+
+# 4. Paste cookies from logged-in CapCut session (see "Login" section below)
+
+# 5. Verify session
+curl http://localhost:7000/login/status
+
+# 6. Render a video
+curl -X POST http://localhost:7000/render-direct \
+  -H "Content-Type: application/json" \
+  -d '{"images": ["/path/to/img1.jpg", "/path/to/img2.jpg"], "videoName": "My Render"}'
 ```
 
-API listening di `http://localhost:7000`.
+## Login (Required for /render-direct and /render)
 
-### 5. Smoke test
+CapCut session cookies expire after some days. When expired, API returns `ret=1015 notLogin`. Refresh via:
+
+### Option A: Web form (recommended)
+
+1. Open `http://localhost:7000/login` in browser
+2. In another tab, log in to https://www.capcut.com
+3. Open DevTools → Application → Cookies → `https://www.capcut.com`
+4. Use a cookie export extension (e.g., EditThisCookie, Cookie-Editor) to copy all cookies as JSON
+5. Paste the JSON array into the form → click Login
+6. Form calls `POST /login` with `{cookies: [...]}` → cookies saved to `.capcut-profile`
+7. Verify with `GET /login/status`
+
+### Option B: curl
 
 ```bash
-npm run test:smoke
+# Cookie header string format
+curl -X POST http://localhost:7000/login \
+  -H "Content-Type: application/json" \
+  -d '{"cookieHeader": "sessionid=xxx; passport_csrf_token=yyy; passport=zzz; sid_tt=aaa; ttwid=bbb; ..."}'
+
+# JSON array format
+curl -X POST http://localhost:7000/login \
+  -H "Content-Type: application/json" \
+  -d '{"cookies": [{"name":"sessionid","value":"xxx","domain":".capcut.com"}, ...]}'
 ```
 
-## API Endpoints
+### Option C: Manual login (interactive browser)
+
+```bash
+# Starts Xvfb + Chromium, navigate to https://www.capcut.com/login
+curl -X POST http://localhost:7000/login/manual
+```
+
+### Required cookies
+
+These 5 cookies are required for full API access:
+- `sessionid` — main session token
+- `passport` — passport auth token
+- `sid_tt` — session ID (TikTok)
+- `passport_csrf_token` — CSRF token (sent as `x-tt-passport-csrf-token` header)
+- `ttwid` — TikTok web ID
+
+## API Reference
 
 ### `GET /`
-Info API & daftar endpoint.
+Server info & endpoint list.
 
 ### `GET /health`
-Health check.
+```json
+{"status": "ok", "uptime": 12.3, "ts": 1786332000, "pid": 12345, "memoryMB": 97}
+```
 
-### `POST /render`
-Render video dari template + gambar. Async, return jobId.
+### `GET /login`
+HTML form for cookie paste.
 
-**Body (JSON)**:
+### `GET /login/status`
+Check current session validity. Cached for 60s. Pass `?refresh=1` to force reload.
+
 ```json
 {
-  "template": "https://www.capcut.com/templates/detail/123456",
-  "imageUrls": [
-    "https://example.com/img1.jpg",
-    "https://example.com/img2.jpg"
-  ]
+  "loggedIn": false,
+  "userId": null,
+  "cookieCount": 24,
+  "critical": ["passport_csrf_token", "ttwid"],
+  "missing": ["sessionid", "passport", "sid_tt"],
+  "error": "session expired, please sign in again",
+  "cached": true,
+  "cacheAge": 12
 }
 ```
 
-**Atau base64**:
+### `POST /login`
+Accept cookies and store in profile. Body formats:
+- `{"cookies": [{name, value, domain, path, ...}, ...]}` — JSON array
+- `{"cookieHeader": "name1=val1; name2=val2; ..."}` — cookie header string
+- `{"netscape": "# Netscape HTTP Cookie File\n..."}` — Netscape format
+
+### `POST /login/manual`
+Start interactive browser (Xvfb + Chromium) for manual login at https://www.capcut.com/login. Returns immediately; login state is polled via `GET /login/status`.
+
+### `POST /render-direct`
+Pure-API render. Accepts JSON or multipart:
+
 ```json
 {
-  "template": "123456",
-  "imagesBase64": [
-    "data:image/png;base64,iVBORw0KGgo...",
-    "data:image/png;base64,iVBORw0KGgo..."
-  ]
+  "images": ["/local/path.jpg", "https://example.com/img.jpg", "data:image/jpeg;base64,..."],
+  "videoName": "My Render"
 }
 ```
 
-**Atau mix**:
+Returns 202 with `jobId`:
 ```json
 {
-  "template": { "url": "https://www.capcut.com/templates/detail/123456" },
-  "images": [
-    { "type": "url", "value": "https://example.com/img1.jpg" },
-    { "type": "base64", "value": "data:image/png;base64,..." },
-    { "type": "file", "value": "/tmp/already/saved.jpg" }
-  ]
-}
-```
-
-**Atau multipart/form-data**:
-```
-POST /render
-Content-Type: multipart/form-data
-
-template=https://www.capcut.com/templates/detail/123456
-images=@/path/to/img1.jpg
-images=@/path/to/img2.jpg
-```
-
-**Response 202**:
-```json
-{
-  "jobId": "abc123def456",
+  "jobId": "abc123",
   "status": "queued",
-  "statusUrl": "/render/status/abc123def456",
-  "downloadUrl": "/render/download/abc123def456"
+  "statusUrl": "/render-direct/status/abc123",
+  "downloadUrl": "/render-direct/download/abc123"
 }
 ```
 
-### `GET /render/status/:jobId`
-Cek status job.
-
+### `GET /render-direct/status/:jobId`
 ```json
 {
-  "jobId": "abc123def456",
+  "jobId": "abc123",
   "status": "running",
-  "progress": 50,
-  "message": "Images uploaded, waiting for editor to apply",
-  "videoUrl": null,
-  "error": null,
-  "createdAt": 1736000000000,
-  "updatedAt": 1736000030000
+  "progress": 45,
+  "message": "Uploading asset 1/2: img1.jpg",
+  "videoUrl": null
 }
 ```
 
-`status`: `queued` | `running` | `completed` | `failed`
+Statuses: `queued` → `running` → `completed` (or `failed`).
 
-### `GET /render/download/:jobId`
-Redirect ke URL file video (302) saat status `completed`. Status lain return 409.
+When `status=completed`, `videoUrl` is set to `/files/videos/My_Render_abc123.mp4`.
 
-### `GET /templates?limit=20&category=`
-List template populer CapCut.
+### `GET /render-direct/download/:jobId`
+Redirect to the rendered video URL (or 409 if not completed).
+
+### `POST /render` (legacy browser editor pipeline)
+Same interface as /render-direct but uses Puppeteer to drive the CapCut web editor for rendering. Slower but works as a fallback.
+
+### `GET /templates?limit=20&category=social`
+List popular templates. **No login required.**
 
 ### `GET /templates/search?q=keyword&limit=20`
-Search template by keyword.
+Search templates by keyword. **No login required.**
 
-### `GET /templates/:id?url=` 
-Detail template. `:id` bisa template ID, atau gunakan `?url=https://...`.
+### `GET /templates/:id`
+Get template detail by ID or URL. **No login required.**
 
 ### `GET /files/videos/:filename`
-Static serve video hasil render.
+Static serve for rendered videos.
 
-## Contoh End-to-End (curl)
+## End-to-end test
 
 ```bash
-# 1. Submit render
-JOB=$(curl -s -X POST http://localhost:7000/render \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "template": "https://www.capcut.com/templates/detail/123456",
-    "imageUrls": ["https://example.com/img1.jpg", "https://example.com/img2.jpg"]
-  }' | jq -r .jobId)
-
-echo "Job: $JOB"
-
-# 2. Poll status (CapCut render butuh 2-5 menit)
-while true; do
-  STATUS=$(curl -s http://localhost:7000/render/status/$JOB)
-  echo "$STATUS" | jq '{status, progress, message}'
-  if echo "$STATUS" | jq -e '.status == "completed" or .status == "failed"' > /dev/null; then break; fi
-  sleep 10
-done
-
-# 3. Download video
-curl -L http://localhost:7000/render/download/$JOB -o result.mp4
-echo "Video saved to result.mp4"
+# Verify all endpoints work (no login needed for /templates, /health, /login)
+node scripts/test-endpoints.js
 ```
 
-## ⚠️ Catatan Penting
+## Configuration
 
-### Selector DOM bisa berubah
-CapCut adalah SPA yang sering update UI. Selector di `src/services/capcut-browser.js` (constant `SELECTORS`) diuji Desember 2024. Bila gagal:
-1. Set `HEADLESS=false` di `.env`
-2. Jalankan `npm run dev` lalu trigger request
-3. Inspect DOM yang berubah, update selector di `SELECTORS` constant
+Create `.env` file (see `.env.example`):
 
-### Anti-bot & TOS
-Otomatisasi CapCut bisa melanggar TOS mereka. Gunakan dengan akun demo/testing, bukan akun utama. Untuk skala produksi, pertimbangkan:
-- Rotate IP / proxy
-- Delay antar request (`SLOW_MO=200`)
-- Limit concurrency (`MAX_CONCURRENT_JOBS=1`)
-- Captcha solver service (kalau login via email kena captcha)
+```bash
+PORT=7000
+HOST=0.0.0.0
+HEADLESS=true
+CAPCUT_USER_DATA_DIR=./.capcut-profile
+LOG_LEVEL=info
+MAX_CONCURRENT_JOBS=1
+```
 
-### Render waktu
-CapCut render video butuh 1-5 menit tergantung template complexity & server load. Pastikan:
-- `RENDER_TIMEOUT=300000` (5 menit) cukup
-- Client poll setiap 10-15 detik, bukan block
-- Browser memory cukup (Chromium butuh ~500MB per session)
-
-### Production deployment
-- Run di Docker container dengan Chromium dependencies (`apt-get install -y libnss3 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2`)
-- Reverse proxy (nginx) untuk HTTPS & static file caching
-- Set `PUBLIC_BASE_URL` ke URL public (bukan localhost)
-- Monitor `videos/` folder size, setup cron cleanup
-- `MAX_CONCURRENT_JOBS` naikkan ke 2-3 kalau RAM server besar
-
-## Struktur Project
+## File structure
 
 ```
 capcut-api/
 ├── src/
-│   ├── index.js                 # Entry point, Hono app, server bootstrap
+│   ├── index.js                    # Hono server entry point
 │   ├── routes/
-│   │   ├── render.js            # POST /render, GET /status, GET /download
-│   │   └── templates.js         # GET /templates, /templates/search, /templates/:id
+│   │   ├── login.js                # Cookie-paste login + session check
+│   │   ├── render.js               # Browser-editor render (legacy)
+│   │   ├── direct-render.js        # Pure-API render (recommended)
+│   │   └── templates.js            # Template list/search/detail
 │   ├── services/
-│   │   ├── capcut-browser.js    # Puppeteer wrapper: login, list, search, getTemplate, renderTemplate
-│   │   ├── input-handler.js     # Resolve input (URL/upload/base64/mix) → local file paths
-│   │   ├── job-manager.js       # Async job queue, status tracking, cleanup
-│   │   └── render-worker.js     # End-to-end render pipeline (browser launch → render → save)
+│   │   ├── capcut-direct-api.js    # Pure-API client (upload, save, render)
+│   │   ├── capcut-browser.js       # Puppeteer browser automation
+│   │   ├── capcut-api.js           # Public template API (no login)
+│   │   ├── vod-uploader.js         # VOD upload (AWS Sigv4)
+│   │   ├── input-handler.js        # Image URL/base64/file resolver
+│   │   ├── job-manager.js          # Async job queue
+│   │   └── render-worker.js        # Browser render worker
 │   └── utils/
-│       ├── config.js            # dotenv config loader
-│       ├── logger.js            # pino logger
-│       ├── paths.js             # dir init, saveVideo, videoPublicUrl, sleep
-│       └── multipart.js         # formidable wrapper
-├── scripts/
-│   ├── manual-login.js          # 1x manual login, save session
-│   └── smoke-test.js            # Basic endpoint test
-├── videos/                      # rendered video output (gitignored)
-├── downloads/                   # temp downloaded images (gitignored)
-├── tmp/                         # tmp working files (gitignored)
-├── .env.example
-├── package.json
-└── README.md
+│       ├── config.js
+│       ├── logger.js
+│       ├── multipart.js
+│       └── paths.js
+├── scripts/                        # Test & dev scripts
+├── test-assets/                    # Sample images
+├── .capcut-profile/                # Chromium userDataDir (cookies stored here)
+├── videos/                         # Rendered MP4s (served via /files/videos/)
+└── tmp/                            # Scratch space
 ```
+
+## Reverse-engineering notes
+
+See `REVERSE_ENGINEERED.md` for detailed notes on:
+- All 5 internal API endpoints (upload_sign, plane_draft/save, render_task/create, render_task/batch_get, download)
+- Sign algorithm: `md5("9e2c|" + last7(path) + "|7|5.8.0|" + ts + "|web|11ac")`
+- Bundle analysis (bundle-018.js, bundle-035.js)
+- Draft schema (Cm for video material, SN for segment, In for crop, Im for stable, IA for matting, Ek for video_algorithm, Sb for responsive_layout)
 
 ## Troubleshooting
 
-**`Error: CAPCUT_EMAIL/CAPCUT_PASSWORD not set`**
-Isi credentials di `.env`, atau set `CAPCUT_USER_DATA_DIR` untuk reuse session.
+### `ret=1015 notLogin` / `SESSION_EXPIRED`
+Session cookies expired. Refresh via `POST /login` with fresh cookies.
 
-**`Login failed. Page text snippet: ...`**
-CapCut menampilkan captcha atau error message. Buka `HEADLESS=false`, login manual via `npm run login:manual`.
+### `ret=2009 ERR_DRAFT_NOT_COMPLETE`
+Draft JSON is missing required fields or asset is not properly registered. Make sure `registerCloudAsset()` is called and `materials.video_id` uses the `cloud_asset.asset_id`, not the raw VOD `vid`.
 
-**`Upload file input not found in CapCut editor`**
-Selector `fileInput` di `capcut-browser.js` berubah. Update `SELECTORS.fileInput` setelah inspect DOM baru.
+### `render_ret_code=19070005` (empty materials)
+Draft was saved without materials. Render task has nothing to render. Check that `materials.videos[]` is populated before `saveDraft()`.
 
-**`Render timeout or no download URL detected`**
-Render butuh >5 menit. Naikkan `RENDER_TIMEOUT` di `.env`, atau template terlalu kompleks.
+### Server dies silently
+Already mitigated with `uncaughtException` + `unhandledRejection` handlers in `src/index.js`. If still happening, check `free -m` for OOM, and reduce `MAX_CONCURRENT_JOBS` to 1.
 
-**Browser crash / SIGKILL**
-Memory kurang. Turunkan `MAX_CONCURRENT_JOBS=1`, atau tambah RAM swap.
-
-**`Persistent session expired` / `Editor menampilkan sign-in modal`**
-Session login CapCut expired. Jalankan ulang `npm run login:manual` untuk
-dapatkan session baru, lalu restart API.
+### `/login/status` is slow (30+ seconds)
+First call spawns a puppeteer browser to read cookies from the profile. Result is cached for 60 seconds. Subsequent calls are fast.
 
 ## License
 
-MIT. Gunakan dengan tanggung jawab. Pengembang tidak bertanggung jawab atas penyalahgunaan akun CapCut atau pelanggaran TOS.
+MIT
