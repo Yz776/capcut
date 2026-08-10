@@ -7,8 +7,13 @@ skills/
 
 # Sensitive session data
 .capcut-profile/
+**/.capcut-profile/
 cookies.json
+**/cookies.json
 *.session
+capcut-api-backup/
+**/Default/
+**/Cache/
 
 # Logs and temp
 *.log
@@ -21,7 +26,14 @@ capcut-api/downloads/
 capcut-api/videos/
 capcut-api/tmp/
 
-# Tool results from CLI sessions
+# Local databases (user/session state)
+db/
+*.sqlite
+*.sqlite3
+*.db
+
+# Debug dumps from CLI sessions
+upload/
 tool-results/
 
 # OS / editor
