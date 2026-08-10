@@ -344,69 +344,43 @@ export class CapCutDirectAPI {
   }
 
   /**
-   * Step 3: Upload asset (3-step cloud upload).
+   * Step 3: Upload asset via pure-API VOD upload (NO BROWSER NEEDED).
+   *
+   * VERIFIED WORKING pipeline (from vod-uploader.js uploadFileVOD):
+   *   1. POST /lv/v1/upload_sign {key_version:'v5', biz:'replicate'} → STS token + space_name
+   *   2. GET vod-ap-singapore-1.bytevcloudapi.com ApplyUploadInner → StoreUri, Auth, UploadHost, SessionKey
+   *   3. POST https://<UploadHost>/<StoreUri> with body=file bytes, Content-CRC32:"ignore" → upload hash
+   *   4. POST vod-ap-singapore-1.bytevcloudapi.com CommitUploadInner with body {SessionKey, Functions:[]}
+   *      → returns Vid + VideoMeta.Uri
+   *
+   * The returned `vid` is what gets used as `asset.video_id` in draft materials,
+   * and `uri` is what gets used as `asset.file_url`/`asset.url`.
+   *
    * @param {string} filePath - local file path
-   * @returns {Promise<{asset_id, video_id, file_url, ...}>}
+   * @returns {Promise<{vid: string, uri: string, video_id: string, file_url: string, url: string, md5: string, fileSize: number, width: number, height: number, spaceName: string, raw: Object}>}
    */
   async uploadAsset(filePath) {
     await this._init();
-    const stat = fs.statSync(filePath);
-    const fileName = path.basename(filePath);
-    const ext = path.extname(filePath).toLowerCase();
-    const contentType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
-      : ext === '.png' ? 'image/png'
-      : ext === '.mp4' ? 'video/mp4'
-      : 'application/octet-stream';
-
-    logger.info({ fileName, sizeKB: Math.round(stat.size / 1024) }, 'uploadAsset: prepare');
-    // Step 3a: prepare upload
-    const prepareRes = await this._axios.post(
-      `${HOSTS.EDIT}/lv/v1/asset/prepare_upload_cloud`,
-      {
-        workspace_id: this.workspaceId,
-        file_name: fileName,
-        file_size: stat.size,
-        content_type: contentType,
-        is_web_user: true,
-      }
-    );
-    const prepareData = this._unwrap(prepareRes.data);
-    const uploadUrl = prepareData.upload_url || prepareData.UploadAddress?.upload_url;
-    const uploadToken = prepareData.upload_token || prepareData.upload_token || prepareData.UploadToken;
-    const storeUri = prepareData.store_uri || prepareData.StoreUri;
-
-    if (!uploadUrl) {
-      logger.error({ prepareData }, 'uploadAsset: no upload_url in prepare response');
-      throw new Error('prepare_upload_cloud did not return upload_url');
-    }
-
-    // Step 3b: PUT file bytes to cloud storage
-    logger.info({ uploadUrl: uploadUrl.slice(0, 80) }, 'uploadAsset: PUT bytes');
-    const fileBuf = fs.readFileSync(filePath);
-    const putRes = await axios.put(uploadUrl, fileBuf, {
-      headers: { 'Content-Type': contentType, 'Content-Length': stat.size },
-      timeout: 120000,
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity,
+    const { uploadFileVOD } = await import('./vod-uploader.js');
+    const result = await uploadFileVOD(this, filePath, {
+      biz: 'replicate',
+      userId: this.userId,
     });
-    logger.info({ putStatus: putRes.status }, 'uploadAsset: PUT done');
-
-    // Step 3c: create cloud asset
-    const createRes = await this._axios.post(
-      `${HOSTS.EDIT}/lv/v1/asset/create_cloud_asset`,
-      {
-        workspace_id: this.workspaceId,
-        file_name: fileName,
-        upload_token: uploadToken,
-        store_uri: storeUri,
-        content_type: contentType,
-        file_size: stat.size,
-        is_web_user: true,
-      }
-    );
-    const assetData = this._unwrap(createRes.data);
-    logger.info({ assetId: assetData.asset_id, videoId: assetData.video_id }, 'uploadAsset: done');
-    return assetData;
+    // Map to the field names expected by saveDraft/patchDraftMaterials
+    return {
+      vid: result.vid,
+      uri: result.uri,
+      video_id: result.vid,
+      file_url: result.uri,
+      url: result.uri,
+      asset_id: result.vid,  // VOD Vid serves as asset_id for create_cloud_asset-style flow
+      md5: result.md5,
+      fileSize: result.fileSize,
+      width: result.width,
+      height: result.height,
+      spaceName: result.spaceName,
+      raw: result.raw,
+    };
   }
 
   /**
@@ -583,10 +557,24 @@ export class CapCutDirectAPI {
         { task_ids: [taskId] }
       );
       const data = this._unwrap(res.data);
-      // Response format: data is a dict keyed by task_id, OR data.tasks array, OR data itself
+      // Response format variations:
+      //   - data[taskId] = {id, status, progress, video_url, ...} (dict keyed by task_id)
+      //   - data.render_task = {id, status, ...} (single task)
+      //   - data.render_task[taskId] = {...} (dict under render_task key)
+      //   - data.tasks[] = [...] (array)
+      //   - data.task_list[] = [...] (array)
+      //   - data itself = {status, id, ...} (already unwrapped)
       let taskInfo = null;
       if (data && typeof data === 'object' && data[taskId]) {
         taskInfo = data[taskId];
+      } else if (data?.render_task) {
+        if (Array.isArray(data.render_task)) {
+          taskInfo = data.render_task[0];
+        } else if (data.render_task[taskId]) {
+          taskInfo = data.render_task[taskId];
+        } else {
+          taskInfo = data.render_task;
+        }
       } else if (Array.isArray(data.tasks) && data.tasks.length > 0) {
         taskInfo = data.tasks[0];
       } else if (Array.isArray(data.task_list) && data.task_list.length > 0) {
