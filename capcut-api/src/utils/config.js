@@ -30,7 +30,10 @@ export const config = {
     viewportHeight: int(process.env.VIEWPORT_HEIGHT, 900),
     navTimeout: int(process.env.NAV_TIMEOUT, 60000),
     renderTimeout: int(process.env.RENDER_TIMEOUT, 300000),
-    userDataDir: process.env.CAPCUT_USER_DATA_DIR || '',
+    // Default ke .capcut-profile di project root supaya cookie paste di /login
+    // otomatis dipakai juga oleh pipeline browser (/render).
+    userDataDir: process.env.CAPCUT_USER_DATA_DIR ||
+      path.resolve(projectRoot, '.capcut-profile'),
   },
 
   capcut: {

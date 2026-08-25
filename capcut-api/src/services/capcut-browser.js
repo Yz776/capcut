@@ -163,22 +163,38 @@ export class CapCutBrowser {
     const hasUserDataDir = !!config.browser.userDataDir;
     const hasEmailCreds = config.capcut.email && config.capcut.password;
 
-    if (!hasUserDataDir && !hasEmailCreds) {
-      throw new Error(
-        'Tidak ada metode login tersedia. Set CAPCUT_USER_DATA_DIR (hasil npm run login:manual) ' +
-        'ATAU set CAPCUT_EMAIL + CAPCUT_PASSWORD di .env'
-      );
-    }
-
     logger.info({
-      mode: hasUserDataDir ? 'persistent-session' : 'email-password',
+      mode: 'cookie-json → persistent-session → email-password',
       userDataDir: config.browser.userDataDir || null,
     }, 'Logging into CapCut...');
+
+    // === Strategi 0: cookies.json dari /login (shared dengan pure-API) ===
+    try {
+      const injected = await this._injectCookiesFromJson();
+      if (injected) {
+        await this.page.goto(config.capcut.baseUrl, { waitUntil: 'domcontentloaded' });
+        await sleep(2000);
+        if (await this._verifyLoggedIn()) {
+          logger.info('Login via cookies.json berhasil (session valid)');
+          this._loggedIn = true;
+          return;
+        }
+        logger.warn('cookies.json ada tapi session tidak valid — coba strategi lain');
+      }
+    } catch (e) {
+      logger.warn({ err: e.message }, 'Cookie inject gagal, fallback ke strategi lain');
+    }
+
+    if (!hasUserDataDir && !hasEmailCreds) {
+      throw new Error(
+        'Session CapCut tidak tersedia. Buka /login di browser, paste cookies dari CapCut yang sudah login, lalu coba lagi. (Atau set CAPCUT_EMAIL + CAPCUT_PASSWORD di .env)'
+      );
+    }
 
     await this.page.goto(config.capcut.baseUrl, { waitUntil: 'domcontentloaded' });
     await sleep(3000);
 
-    // === Strategi 1: Persistent session ===
+    // === Strategi 1: Persistent session (userDataDir) ===
     if (hasUserDataDir) {
       try {
         await this.page.waitForSelector(SELECTORS.loginSuccessIndicator, { timeout: 8000 });
@@ -186,14 +202,12 @@ export class CapCutBrowser {
         this._loggedIn = true;
         return;
       } catch (_) {
-        // Avatar tidak ketemu. Cek apakah di-redirect ke /login
         const currentUrl = this.page.url();
         if (/\/login/.test(currentUrl)) {
           throw new Error(
-            'Persistent session expired. Jalankan ulang: npm run login:manual lalu scan QR baru.'
+            'Persistent session expired. Buka /login di browser dan paste cookies fresh dari CapCut.'
           );
         }
-        // Mungkin avatar selectornya beda. Cek via cookies.
         const cookies = await this.browser.cookies();
         const sessionCookies = cookies.filter(c =>
           /session|token|uid|passport|sid/i.test(c.name)
@@ -207,8 +221,7 @@ export class CapCutBrowser {
           return;
         }
         throw new Error(
-          'Persistent session tidak valid (tidak ada cookie session). ' +
-          'Jalankan ulang: npm run login:manual'
+          'Persistent session tidak valid. Buka /login di browser dan paste cookies fresh dari CapCut.'
         );
       }
     }
@@ -493,22 +506,55 @@ export class CapCutBrowser {
     } catch (_) {}
     await this._closeModals();
 
-    // Tunggu progress render selesai
+    // Network intercept — lebih reliable daripada DOM scrape untuk URL video
     progress(75, 'Rendering in progress');
-    let done = false;
     let downloadUrl = null;
+    const capturedUrls = new Set();
+
+    const onResponse = async (res) => {
+      try {
+        const u = res.url();
+        const ct = (res.headers()['content-type'] || '').toLowerCase();
+        const status = res.status();
+        if (status < 200 || status >= 400) return;
+        // CapCut CDN video URLs / content-type video
+        if (
+          ct.includes('video/') ||
+          /\.mp4(\?|$)/i.test(u) ||
+          /\/video\/|vod-|\.bytevcloud|capcut\.com.*\.(mp4|m3u8)/i.test(u)
+        ) {
+          // Skip tiny / preview / thumbnail responses
+          const len = parseInt(res.headers()['content-length'] || '0', 10);
+          if (len > 0 && len < 50_000) return;
+          capturedUrls.add(u);
+          if (!downloadUrl) {
+            downloadUrl = u;
+            logger.info({ url: u.slice(0, 120), ct, len }, 'Captured video URL from network');
+          }
+        }
+      } catch (_) {}
+    };
+    this.page.on('response', onResponse);
+
     const start = Date.now();
     const renderTimeout = config.browser.renderTimeout;
 
-    while (!done && Date.now() - start < renderTimeout) {
+    while (!downloadUrl && Date.now() - start < renderTimeout) {
       await sleep(3000);
+
+      // Fallback DOM scrape
       try {
-        downloadUrl = await this.page.$eval(SELECTORS.renderDone, el => {
-          if (el.tagName === 'A') return el.href;
+        const domUrl = await this.page.$eval(SELECTORS.renderDone, el => {
+          if (el.tagName === 'A' && el.href) return el.href;
           return null;
         }).catch(() => null);
+        if (domUrl) {
+          downloadUrl = domUrl;
+          capturedUrls.add(domUrl);
+        }
       } catch (_) {}
 
+      // Progress text
       try {
         const pctText = await this.page.$eval(SELECTORS.renderProgress, el => {
           return el.getAttribute('aria-valuenow') ||
@@ -519,12 +565,21 @@ export class CapCutBrowser {
           if (pct < 100) progress(75 + Math.floor(pct * 0.2), `Rendering ${pct}%`);
         }
       } catch (_) {}
+    }
 
-      if (downloadUrl) { done = true; break; }
+    this.page.off('response', onResponse);
+
+    if (!downloadUrl) {
+      // Last resort: any captured URL
+      const first = [...capturedUrls][0];
+      if (first) downloadUrl = first;
     }
 
     if (!downloadUrl) {
-      throw new Error('Render timeout or no download URL detected');
+      throw new Error(
+        'Render timeout — tidak ada URL video terdeteksi. ' +
+        'Coba template lain, atau naikkan RENDER_TIMEOUT. Pastikan session masih valid (cek /login/status).'
+      );
     }
 
     progress(95, 'Downloading rendered video');
@@ -558,9 +613,71 @@ export class CapCutBrowser {
     return Buffer.from(res.data);
   }
 
+  /**
+   * Inject cookies from cookies.json (written by POST /login) into the browser.
+   * Returns true if cookies were set.
+   */
+  async _injectCookiesFromJson() {
+    const { loadCookies } = await import('../utils/cookie-loader.js');
+    const data = await loadCookies();
+    if (!data?.all?.length) return false;
+
+    // Puppeteer setCookie needs domain without leading protocol; prefer .capcut.com
+    const puppeteerCookies = data.all
+      .filter(c => c.name && c.value != null)
+      .map(c => {
+        let domain = (c.domain || '.capcut.com').replace(/^\./, '');
+        if (domain.includes('capcut') || domain.includes('bytedance') || domain.includes('byteoversea')) {
+          // keep as-is
+        } else {
+          domain = 'capcut.com';
+        }
+        const cookie = {
+          name: c.name,
+          value: String(c.value),
+          domain: domain.startsWith('.') ? domain : `.${domain}`,
+          path: c.path || '/',
+          secure: c.secure !== false,
+          httpOnly: !!c.httpOnly,
+        };
+        if (c.expires && Number.isFinite(c.expires) && c.expires > 0) {
+          cookie.expires = c.expires;
+        }
+        // sameSite: Puppeteer accepts Strict/Lax/None
+        const ss = (c.sameSite || 'Lax').toString();
+        cookie.sameSite = ss.charAt(0).toUpperCase() + ss.slice(1).toLowerCase();
+        if (!['Strict', 'Lax', 'None'].includes(cookie.sameSite)) cookie.sameSite = 'Lax';
+        return cookie;
+      });
+
+    if (puppeteerCookies.length === 0) return false;
+
+    // Must be on a matching domain before setting cookies in some Chromium versions
+    await this.page.goto(config.capcut.baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await this.page.setCookie(...puppeteerCookies);
+    logger.info({ count: puppeteerCookies.length }, 'Injected cookies from cookies.json into browser');
+    return true;
+  }
+
+  /**
+   * Verify we appear logged in (avatar, or session cookies present, not on /login).
+   */
+  async _verifyLoggedIn() {
+    const url = this.page.url();
+    if (/\/login/.test(url)) return false;
+    try {
+      await this.page.waitForSelector(SELECTORS.loginSuccessIndicator, { timeout: 5000 });
+      return true;
+    } catch (_) {
+      // fallback: session cookies
+      const cookies = await this.browser.cookies();
+      return cookies.some(c => /sessionid|sid_tt|passport_csrf/i.test(c.name) && c.value);
+    }
+  }
+
   _ensureLogin() {
     if (!this._loggedIn) {
-      throw new Error('Browser not logged in. Call login() first.');
+      throw new Error('Browser not logged in. Call login() first. Open /login and paste CapCut cookies.');
     }
   }
 }

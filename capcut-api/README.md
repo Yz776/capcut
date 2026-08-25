@@ -1,6 +1,6 @@
 # CapCut JJ API v2.0
 
-Pure Node.js API untuk otomatisasi CapCut: list/search template, upload gambar, render jadi video via pure API (no browser editor for render step), dan serve hasilnya. Reverse-engineered langsung dari CapCut internal API.
+Pure Node.js API untuk otomatisasi CapCut: list/search template, inject gambar, render jadi video, dan serve hasilnya.
 
 ## Architecture
 
@@ -8,21 +8,23 @@ Pure Node.js API untuk otomatisasi CapCut: list/search template, upload gambar, 
 
 | Pipeline | Endpoint | Browser needed? | Status |
 |----------|----------|-----------------|--------|
-| **Direct API** (recommended) | `POST /render-direct` | ❌ NO browser for render step | ✅ Code complete, needs valid session |
-| **Browser editor** (legacy) | `POST /render` | ✅ Puppeteer + CapCut editor | ✅ Working with valid session |
+| **Browser editor (PRIMARY)** | `POST /render` | ✅ Puppeteer + CapCut editor | ✅ Stabil — recommended production path |
+| **Direct API (experimental)** | `POST /render-direct` | ❌ NO browser for render step | ⚠️ Code complete; draft materials validation masih experimental |
 
-**Direct API pipeline** (reverse-engineered from bundle-035.js):
-1. `POST /lv/v1/upload_sign` → STS token
-2. VOD upload → `ApplyUploadInner` → upload bytes → `CommitUploadInner` → returns `vid` + `uri`
-3. `POST /lv/v1/asset/prepare_upload_cloud` → `upload_id`
-4. `POST /lv/v1/asset/create_cloud_asset` → `cloud_asset.asset_id`
-5. Build draft JSON with materials.videos[] using `asset_id`
-6. `POST /lv/v1/editor/plane_draft/save` → `package_id`
-7. `POST /lv/v1/render_task/create` → `task_id`
-8. `POST /lv/v1/render_task/batch_get` (poll) → `video_url`
-9. Download MP4 → serve via `/files/videos/*`
+**Browser pipeline** (primary):
+1. Resolve template ID/URL
+2. Launch headless Chromium + inject cookies dari `/login`
+3. Buka `editor-template?create_id=...`
+4. Upload images via `<input type="file">`
+5. Click Export → intercept network untuk URL MP4 → download
 
-**Auth**: Cookie-based (passport_csrf_token + sessionid + passport + sid_tt + ttwid). Sign each request with MD5 of `9e2c|${last7_of_path}|${pf}|${appvr}|${deviceTime}|${tdid}|11ac`.
+**Direct API pipeline** (experimental, reverse-engineered):
+1. VOD upload + register cloud asset
+2. Build / save plane draft
+3. Create + poll render task
+4. Download MP4
+
+**Auth**: Cookie-based. Satu kali paste di `/login` → dipakai kedua pipeline (cookies.json + profile).
 
 ## Quick Start
 
@@ -32,6 +34,7 @@ npm install
 
 # 2. Start server (port 7000 by default, auto-fallback to 3002-3010)
 npm start
+# atau: bash scripts/start-server.sh
 
 # 3. Open login form in browser
 open http://localhost:7000/login
@@ -41,13 +44,19 @@ open http://localhost:7000/login
 # 5. Verify session
 curl http://localhost:7000/login/status
 
-# 6. Render a video
-curl -X POST http://localhost:7000/render-direct \
+# 6. Render via browser pipeline (PRIMARY)
+curl -X POST http://localhost:7000/render \
   -H "Content-Type: application/json" \
-  -d '{"images": ["/path/to/img1.jpg", "/path/to/img2.jpg"], "videoName": "My Render"}'
+  -d '{
+    "template": "https://www.capcut.com/templates/detail/YOUR_TEMPLATE_ID",
+    "imageUrls": ["https://example.com/img1.jpg", "https://example.com/img2.jpg"]
+  }'
+
+# 7. Poll status
+curl http://localhost:7000/render/status/<jobId>
 ```
 
-## Login (Required for /render-direct and /render)
+## Login (Required for /render and /render-direct)
 
 CapCut session cookies expire after some days. When expired, API returns `ret=1015 notLogin`. Refresh via:
 

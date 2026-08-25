@@ -98,7 +98,12 @@ export async function runRenderJob(job, input) {
   } catch (err) {
     logger.error({ jobId: job.id, err: err.message, stack: err.stack }, 'Render job failed');
     job.status = 'failed';
-    job.error = err.message;
+    let msg = err.message || String(err);
+    if (/session|login|cookie|not logged/i.test(msg)) {
+      msg += ' → Buka /login di browser, paste cookies fresh dari CapCut yang sudah login, lalu retry.';
+    }
+    job.error = msg;
+    job.message = msg;
     job.updatedAt = Date.now();
     throw err;
   } finally {

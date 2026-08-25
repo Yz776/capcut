@@ -115,12 +115,19 @@ serve({
 }, (info) => {
   logger.info(`CapCut JJ API listening on http://${config.host}:${PORT}`);
   logger.info(`Login form: http://localhost:${PORT}/login`);
-  if (!config.browser.userDataDir) {
-    logger.warn(
-      'CAPCUT_USER_DATA_DIR not set. /render will fail at login step. ' +
-      'Open /login in browser to refresh session.'
-    );
-  }
+  logger.info(`Profile dir: ${config.browser.userDataDir}`);
+  // Cek cookies.json — tanpa ini /render & /render-direct butuh login dulu
+  try {
+    const cookiePath = path.join(config.browser.userDataDir, 'cookies.json');
+    if (fs.existsSync(cookiePath)) {
+      logger.info('cookies.json found — session siap untuk /render dan /render-direct');
+    } else {
+      logger.warn(
+        'cookies.json belum ada. Buka /login di browser, paste cookies dari CapCut yang sudah login, ' +
+        'baru /render bisa jalan.'
+      );
+    }
+  } catch (_) {}
   logger.info(`Headless: ${config.browser.headless}, Concurrency: ${config.jobs.maxConcurrent}`);
 });
 
