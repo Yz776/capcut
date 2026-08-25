@@ -11,6 +11,8 @@
     "test:render": "node scripts/test-render.js",
     "login:manual": "node scripts/manual-login.js",
     "login:manual:xvfb": "xvfb-run --auto-servernum --server-args='-screen 0 1440x900x24' node scripts/manual-login.js",
+    "capture:oneshot": "node scripts/capture-oneshot.js",
+    "capture:oneshot:xvfb": "xvfb-run --auto-servernum --server-args='-screen 0 1440x900x24' node scripts/capture-oneshot.js",
     "deps:install": "bash scripts/install-deps.sh"
   },
   "engines": {

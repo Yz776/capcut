@@ -216,20 +216,40 @@ async function runDirectRenderJob(job, { imagePaths, videoName }) {
 
     setProgress(30, 'Building draft JSON with materials');
     const draftId = String(Date.now()) + Math.floor(Math.random() * 1000);
-    const draftData = buildDraft(assets, { draftId, videoName: videoName || 'CapCut Render' });
-    fs.writeFileSync(path.join(process.cwd(), 'tmp', `draft-${draftId}.json`), JSON.stringify(draftData, null, 2));
-
-    setProgress(40, 'Saving draft to CapCut');
     const packageAssets = assets.map((a, i) => ({
       source_path: path.basename(imagePaths[i]),
       md5: a.md5,
       size: a.fileSize,
     }));
+
+    // Prefer golden fixture from capture-oneshot.js (real CapCut save body).
+    // Ini jalur paling efisien: replay body yang sudah lolos validasi server.
+    let draftData;
+    let materialsOverride;
+    let packageAssetsOverride = packageAssets;
+    const fixture = loadCapturedSaveFixture(assets, { draftId });
+    if (fixture) {
+      logger.info({ src: fixture.source }, 'Using captured plane_draft/save fixture');
+      draftData = fixture.content;
+      materialsOverride = fixture.materials;
+      packageAssetsOverride = fixture.packageAssets || packageAssets;
+      setProgress(35, 'Draft dari capture fixture (golden path)');
+    } else {
+      draftData = buildDraft(assets, { draftId, videoName: videoName || 'CapCut Render' });
+      materialsOverride = draftData.materials;
+      setProgress(35, 'Draft dari buildDraft schema (experimental)');
+    }
+
+    const tmpDir = path.join(process.cwd(), 'tmp');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, `draft-${draftId}.json`), JSON.stringify(draftData, null, 2));
+
+    setProgress(40, 'Saving draft to CapCut');
     const saveResult = await api.saveDraft(draftData, {
       packageKey: draftId,
       videoName: videoName || 'CapCut Render',
-      materials: draftData.materials,
-      packageAssets,
+      materials: materialsOverride,
+      packageAssets: packageAssetsOverride,
     });
     logger.info({ packageKey: saveResult.package_key, packageId: saveResult.package_id }, 'Draft saved');
     setProgress(55, `Draft saved (package_id: ${saveResult.package_id})`);
@@ -287,8 +307,92 @@ async function runDirectRenderJob(job, { imagePaths, videoName }) {
 
 // ====== Draft builder ======
 
+/**
+ * Load golden fixture from scripts/capture-oneshot.js output.
+ * Expected file: tmp/captured-save-body.json (body of plane_draft/save).
+ * We parse template_data if present, patch materials.videos video_id/asset refs.
+ */
+function loadCapturedSaveFixture(assets, { draftId }) {
+  const candidates = [
+    path.join(process.cwd(), 'tmp', 'captured-save-body.json'),
+    path.join(process.cwd(), 'captured-save-body.json'),
+  ];
+  let raw = null;
+  let source = null;
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      try {
+        raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+        source = p;
+        break;
+      } catch (_) {}
+    }
+  }
+  if (!raw) return null;
+
+  // Body shape variants:
+  //  A) full save body: { package_key, template_data: "<json string>", materials, package_assets, ... }
+  //  B) already-parsed draft content object with materials + tracks
+  let content = null;
+  let materials = null;
+  let packageAssets = null;
+
+  if (typeof raw.template_data === 'string') {
+    try {
+      content = JSON.parse(raw.template_data);
+    } catch (_) {
+      return null;
+    }
+    materials = raw.materials || content.materials || {};
+    packageAssets = raw.package_assets || null;
+  } else if (raw.materials || raw.tracks) {
+    content = raw;
+    materials = raw.materials || {};
+  } else if (raw.template_data && typeof raw.template_data === 'object') {
+    content = raw.template_data;
+    materials = raw.materials || content.materials || {};
+    packageAssets = raw.package_assets || null;
+  } else {
+    return null;
+  }
+
+  // Deep clone and patch video material IDs with newly uploaded assets
+  content = JSON.parse(JSON.stringify(content));
+  materials = JSON.parse(JSON.stringify(materials || content.materials || {}));
+  const videos = materials.videos || content.materials?.videos || [];
+  if (Array.isArray(videos) && assets.length) {
+    for (let i = 0; i < Math.min(videos.length, assets.length); i++) {
+      const a = assets[i];
+      const id = a.cloud_asset_id || a.vid;
+      videos[i] = {
+        ...videos[i],
+        video_id: id,
+        material_id: id,
+        md5: a.md5 || videos[i].md5,
+        material_url: a.uri || videos[i].material_url,
+        width: a.width || videos[i].width,
+        height: a.height || videos[i].height,
+      };
+    }
+    materials.videos = videos;
+    if (content.materials) content.materials.videos = videos;
+  }
+
+  // Fresh package key for this job
+  if (content.id) content.id = draftId;
+
+  return {
+    source,
+    content,
+    materials,
+    packageAssets,
+  };
+}
+
 function buildDraft(assets, { draftId, videoName }) {
-  const durationUs = 5_000_000; // 5 seconds
+  const durationUs = 5_000_000; // timeline 5s
+  // CapCut desktop/web convention: still photo material duration ≈ 3 hours (µs)
+  const PHOTO_MATERIAL_DURATION = 10_800_000_000;
   const materials = {
     videos: [],
     audios: [],
@@ -333,7 +437,7 @@ function buildDraft(assets, { draftId, videoName }) {
       cartoon_path: '',
       width: asset.width || 1080,
       height: asset.height || 1920,
-      duration: segmentDuration,
+      duration: PHOTO_MATERIAL_DURATION,
       category_id: '',
       category_name: '',
       material_id: matVideoId,
