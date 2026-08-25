@@ -1,7 +1,7 @@
 #!/bin/bash
 # scripts/start-server.sh
 #
-# Start the CapCut JJ API server in the background, properly detached
+# Start the CapCut API server in the background, properly detached
 # from the parent shell so it survives terminal/session close.
 #
 # Usage: bash scripts/start-server.sh [port]
@@ -36,7 +36,7 @@ fi
 # Find the actual port (auto-fallback)
 PORT=$(grep 'listening on http://' /tmp/capcut-server.log | head -1 | grep -oE ':[0-9]+' | tail -1 | tr -d ':')
 
-echo "✓ CapCut JJ API started"
+echo "✓ CapCut API started"
 echo "  PID:  $SERVER_PID"
 echo "  Port: $PORT"
 echo "  Log:  /tmp/capcut-server.log"

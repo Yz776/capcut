@@ -1,7 +1,7 @@
 {
-  "name": "capcut-jj-api",
-  "version": "1.0.0",
-  "description": "Pure Node.js API for CapCut template automation: list/search templates, inject images, render video, download & serve result URL. Uses Puppeteer (headless Chromium) + Hono.",
+  "name": "capcut-api",
+  "version": "3.0.0",
+  "description": "CapCut HTTP API — session auth, templates, async video render",
   "type": "module",
   "main": "src/index.js",
   "scripts": {

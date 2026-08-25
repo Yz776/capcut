@@ -29,33 +29,47 @@ app.use('*', async (c, next) => {
   await next();
 });
 
+// CORS — API-first (bisa dipanggil dari frontend / n8n / script)
+app.use('*', async (c, next) => {
+  c.header('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || '*');
+  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (c.req.method === 'OPTIONS') return c.body(null, 204);
+  await next();
+});
+
 // ============ Routes ============
 app.get('/', (c) => c.json({
-  name: 'CapCut JJ API',
-  version: '2.0.0',
-  status: 'running',
+  name: 'CapCut API',
+  version: '3.0.0',
+  status: 'ok',
+  docs: 'https://github.com/Yz776/capcut',
   endpoints: {
-    'GET  /': 'This info',
-    'GET  /health': 'Health check',
-    'GET  /login': 'Login form (HTML) for cookie paste',
-    'GET  /login/status': 'Check current session status',
-    'POST /login': 'Submit cookies (JSON: {cookies:[...]} | {cookieHeader:"..."} | {netscape:"..."})',
-    'POST /login/manual': 'Start interactive browser for manual login (Xvfb)',
-    'POST /render': 'Render video from template + images via browser editor (async)',
-    'GET  /render/status/:jobId': 'Check render job status',
-    'GET  /render/download/:jobId': 'Redirect to rendered video URL',
-    'POST /render-direct': 'Render video via pure API (no browser) — async',
-    'GET  /render-direct/status/:jobId': 'Check direct-render job status',
-    'GET  /templates': 'List popular CapCut templates',
-    'GET  /templates/search?q=': 'Search templates by keyword',
-    'GET  /templates/:id': 'Get template detail (id or url query)',
-    'GET  /files/videos/:filename': 'Static serve rendered videos',
+    health: { method: 'GET', path: '/health' },
+    login: {
+      method: 'POST',
+      path: '/login',
+      body: '{ "cookies": [...] } | { "cookieHeader": "..." }',
+    },
+    loginStatus: { method: 'GET', path: '/login/status' },
+    templates: { method: 'GET', path: '/templates' },
+    templatesSearch: { method: 'GET', path: '/templates/search?q=' },
+    templateDetail: { method: 'GET', path: '/templates/:id' },
+    render: {
+      method: 'POST',
+      path: '/render',
+      body: '{ "template": "<id|url>", "imageUrls": ["..."] }',
+      response: '202 { jobId, statusUrl, downloadUrl }',
+    },
+    renderStatus: { method: 'GET', path: '/render/status/:jobId' },
+    renderDownload: { method: 'GET', path: '/render/download/:jobId' },
+    renderDirect: {
+      method: 'POST',
+      path: '/render-direct',
+      note: 'experimental pure-API path',
+    },
+    files: { method: 'GET', path: '/files/videos/:filename' },
   },
-  quickStart: [
-    '1. Open http://localhost:' + config.port + '/login in browser',
-    '2. Paste cookies from logged-in CapCut session',
-    '3. POST /render with template + images to render video',
-  ],
 }));
 
 app.get('/health', (c) => c.json({

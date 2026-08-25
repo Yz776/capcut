@@ -1,0 +1,12 @@
+{
+  "name": "capcut",
+  "version": "3.0.0",
+  "private": true,
+  "description": "CapCut HTTP API — session, templates, render",
+  "scripts": {
+    "start": "npm --prefix capcut-api start",
+    "dev": "npm --prefix capcut-api run dev",
+    "install:api": "npm --prefix capcut-api install",
+    "postinstall": "npm --prefix capcut-api install"
+  }
+}
