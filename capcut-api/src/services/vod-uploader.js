@@ -400,13 +400,22 @@ export async function uploadFileVOD(api, filePath, { biz = 'replicate', userId =
 
   logger.info({ filePath, fileSize, fileName, biz }, 'uploadFileVOD: starting');
 
-  // === Step 1: /lv/v1/upload_sign ===
-  const signRes = await api._axios.post(
-    'https://edit-api-sg.capcut.com/lv/v1/upload_sign',
-    { key_version: 'v5', biz }
-  );
-  if (signRes.data?.ret !== '0') {
-    throw new Error(`/lv/v1/upload_sign failed: ret=${signRes.data?.ret} errmsg=${signRes.data?.errmsg}`);
+  // === Step 1: /lv/v1/upload_sign (retry on ret=1014) ===
+  let signRes = null;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    signRes = await api._axios.post(
+      'https://edit-api-sg.capcut.com/lv/v1/upload_sign',
+      { key_version: 'v5', biz }
+    );
+    if (signRes.data?.ret === '0') break;
+    lastErr = `ret=${signRes.data?.ret} errmsg=${signRes.data?.errmsg}`;
+    logger.warn({ attempt, lastErr, biz }, 'upload_sign failed, retrying');
+    if (String(signRes.data?.ret) !== '1014') break;
+    await new Promise(r => setTimeout(r, 1500 * attempt));
+  }
+  if (signRes?.data?.ret !== '0') {
+    throw new Error(`/lv/v1/upload_sign failed: ${lastErr}`);
   }
   const token = signRes.data.data;
   const spaceName = token.space_name;

@@ -62,9 +62,11 @@ app.post('/', async (c) => {
     contentType,
   });
 
-  // Enqueue async execution
+  const engine = (jsonBody && jsonBody.engine ? String(jsonBody.engine) : 'auto').toLowerCase();
+  job.meta = { ...(job.meta || {}), engine };
+
   enqueueJob(job, async (j) => {
-    await runRenderJob(j, { template, imagePaths });
+    await runRenderJob(j, { template, imagePaths, engine });
   });
 
   return c.json({

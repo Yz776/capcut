@@ -271,106 +271,74 @@ export class CapCutBrowser {
    * CapCut sering banget munculin modal "Dreamina", "Subscribe", dll.
    */
   async _closeModals() {
-    const withTimeout = (promise, ms, label) =>
-      Promise.race([
-        promise,
-        new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timeout ${ms}ms`)), ms)),
-      ]);
-
-    let closedCount = 0;
-    let lastStillVisible = false;
-    let stuckModals = [];
-    for (let i = 0; i < 5; i++) {
-      // Klik tombol close (timeout 3s each)
+    // Fast fail-forward: never block the pipeline for more than ~6s total.
+    const deadline = Date.now() + 6000;
+    let closed = 0;
+    while (Date.now() < deadline) {
       try {
-        const closeBtn = await withTimeout(this.page.$(SELECTORS.modalClose), 3000, 'modalClose');
-        if (closeBtn) {
-          await withTimeout(closeBtn.click(), 3000, 'closeBtn.click');
-          closedCount++;
-          await sleep(500);
-          continue;
-        }
-      } catch (_) {}
-
-      // Klik modal mask
-      try {
-        const mask = await withTimeout(this.page.$(SELECTORS.modalMask), 3000, 'modalMask');
-        if (mask) {
-          await withTimeout(mask.evaluate(el => el.click()), 3000, 'mask.click');
-          closedCount++;
-          await sleep(500);
-          continue;
-        }
-      } catch (_) {}
-
-      // Press Escape
-      try {
-        await withTimeout(this.page.keyboard.press('Escape'), 3000, 'Escape');
-        await sleep(300);
-      } catch (_) {}
-
-      // Cek apakah masih ada modal visible (timeout 4s)
-      const probe = await withTimeout(
-        this.page.evaluate(() => {
-          const out = { stillVisible: false, modals: [] };
-          const modals = document.querySelectorAll('.lv-modal-mask, .lv-modal-wrapper, [class*="modal" i], [class*="dialog" i]');
-          for (const m of modals) {
-            if (m.offsetParent !== null && getComputedStyle(m).display !== 'none') {
-              out.stillVisible = true;
-              out.modals.push({
-                cls: (m.className || '').toString().slice(0, 100),
-                text: (m.innerText || '').slice(0, 300),
-              });
-              if (out.modals.length >= 5) break;
+        const acted = await Promise.race([
+          this.page.evaluate(() => {
+            let n = 0;
+            // Close icons
+            for (const el of document.querySelectorAll(
+              '.lv-modal-close-icon, [class*="modal-close"], [aria-label="Close"], [aria-label="close"], button[class*="close"]'
+            )) {
+              try { el.click(); n++; } catch (_) {}
             }
-          }
-          return out;
-        }),
-        4000,
-        'evaluate'
-      ).catch(() => ({ stillVisible: false, modals: [] }));
-      lastStillVisible = probe.stillVisible;
-      stuckModals = probe.modals || [];
-      if (!probe.stillVisible) break;
-    }
-    if (closedCount > 0) {
-      logger.info({ closed: closedCount }, 'Closed blocking modals');
-    }
-    // Diagnostic: if modals still visible after 5 attempts, save screenshot + dump modal info
-    if (lastStillVisible) {
-      try {
-        const tmpDir = path.resolve(process.cwd(), 'tmp');
-        fs.mkdirSync(tmpDir, { recursive: true });
-        const ts = Date.now();
-        const shotPath = path.join(tmpDir, `modal-stuck-${ts}.png`);
-        await withTimeout(this.page.screenshot({ path: shotPath, fullPage: false }), 5000, 'screenshot');
-        logger.warn({ closedCount, stuckModals, screenshot: shotPath, url: this.page.url() }, 'Modals still visible after 5 close attempts');
-      } catch (e) {
-        logger.warn({ closedCount, stuckModals, error: e.message, url: this.page.url() }, 'Modals stuck + screenshot failed');
+            // Cookie / consent banners
+            for (const el of document.querySelectorAll('button')) {
+              const t = (el.textContent || '').trim().toLowerCase();
+              if (['accept', 'agree', 'got it', 'ok', 'allow', '关闭', '同意'].includes(t)) {
+                try { el.click(); n++; } catch (_) {}
+              }
+            }
+            // Masks
+            for (const el of document.querySelectorAll('.lv-modal-mask')) {
+              try { el.click(); n++; } catch (_) {}
+            }
+            return n;
+          }),
+          new Promise((r) => setTimeout(() => r(0), 1500)),
+        ]);
+        closed += acted || 0;
+        await this.page.keyboard.press('Escape').catch(() => {});
+        await new Promise((r) => setTimeout(r, 250));
+        // Stop early if no dialogs left
+        const still = await Promise.race([
+          this.page.evaluate(() => {
+            const sels = ['.lv-modal-mask', '.lv-modal-wrapper', '[class*="sign_in_panel"]', '[role="dialog"]'];
+            return sels.some((s) => {
+              for (const el of document.querySelectorAll(s)) {
+                const st = getComputedStyle(el);
+                if (st.display !== 'none' && st.visibility !== 'hidden' && el.offsetWidth > 20) return true;
+              }
+              return false;
+            });
+          }),
+          new Promise((r) => setTimeout(() => r(false), 1000)),
+        ]);
+        if (!still) break;
+        if (!acted) break; // nothing to click, don't spin
+      } catch (_) {
+        break;
       }
     }
-    return closedCount;
+    if (closed > 0) logger.info({ closed }, 'Closed blocking modals');
+    return closed;
   }
 
-  /**
-   * Cek apakah sign-in modal muncul di editor.
-   * Kalau iya, berarti session editor tidak valid — perlu re-login.
-   */
   async _checkEditorSignInModal() {
     try {
       const signIn = await this.page.$(SELECTORS.signInModal);
       if (signIn) {
-        const visible = await signIn.evaluate(el => el.offsetParent !== null);
+        const visible = await signIn.evaluate(el => el.offsetParent !== null).catch(() => false);
         if (visible) {
-          throw new Error(
-            'Editor menampilkan sign-in modal walaupun passport cookie ada. ' +
-            'Session editor tidak lengkap — coba login ulang: npm run login:manual'
-          );
+          logger.warn('Editor shows sign-in modal — session may be incomplete; continuing to try export');
+          // Try dismiss once
+          await this.page.keyboard.press('Escape').catch(() => {});
         }
       }
-    } catch (e) {
-      if (e.message.includes('sign-in modal')) throw e;
-    }
+    } catch (_) {}
   }
 
   /**

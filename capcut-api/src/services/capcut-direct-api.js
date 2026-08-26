@@ -122,7 +122,7 @@ export class CapCutDirectAPI {
     this.allCookies = cookieData.all;
 
     // Detect login status — if sessionid is missing, session is expired.
-    const hasSession = cookieData.all.some(c => c.name === 'sessionid' || c.name === 'sid_tt');
+    const hasSession = cookieData.all.some(c => ['sessionid','sessionid_ss','sid_tt','sid_ucp_v1'].includes(c.name));
     if (!hasSession) {
       logger.warn('Session appears EXPIRED — sessionid/sid_tt cookie missing. API calls will fail with ret=1015 notLogin. Refresh via POST /login.');
     }
@@ -158,7 +158,7 @@ export class CapCutDirectAPI {
       const pf = config.headers?.pf || DEFAULT_HEADERS.pf;
       const appvr = config.headers?.appvr || DEFAULT_HEADERS.appvr;
       // For sign computation, use empty tdid (matches bundle-035.js py interceptor)
-      const tdidForSign = '';
+      const tdidForSign = 'web';
 
       config.headers = {
         ...config.headers,

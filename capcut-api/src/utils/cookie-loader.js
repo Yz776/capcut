@@ -33,6 +33,22 @@ const userDataDir = config.browser.userDataDir ||
  * @param {boolean} forceRefresh - bypass cache
  * @returns {Promise<{header: string, csrfToken: string|null, all: Object[], ts: number}>}
  */
+
+function expandSessionAliases(cookies) {
+  const names = new Set(cookies.map(c => c.name));
+  const out = [...cookies];
+  const alias = (from, to) => {
+    if (names.has(from) && !names.has(to)) {
+      const src = cookies.find(c => c.name === from);
+      if (src) out.push({ ...src, name: to });
+    }
+  };
+  alias('sessionid_ss', 'sessionid');
+  alias('uid_tt_ss', 'uid_tt');
+  alias('ssid_tt', 'sid_tt');
+  return out;
+}
+
 export async function loadCookies(forceRefresh = false) {
   const now = Date.now();
   if (_cache && !forceRefresh && (now - _cache.ts) < CACHE_TTL_MS) {
@@ -70,6 +86,8 @@ export async function loadCookies(forceRefresh = false) {
   if (!cookies || cookies.length === 0) {
     throw new Error('No cookies found. Open /login in browser and paste cookies first.');
   }
+
+  cookies = expandSessionAliases(cookies);
 
   const header = cookies.map(c => `${c.name}=${c.value}`).join('; ');
   const csrfCookie = cookies.find(c => c.name === 'passport_csrf_token') ||

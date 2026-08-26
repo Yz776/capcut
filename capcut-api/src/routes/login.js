@@ -246,34 +246,60 @@ app.get('/status', async (c) => {
     const cookieData = await loadCookies(refresh);
     const cookies = cookieData.all;
 
-    // Verify session by hitting /passport/web/account/info/ via axios (no browser needed)
-    const infoResp = await axios.get('https://www.capcut.com/passport/web/account/info/', {
-      headers: {
-        Cookie: cookieData.header,
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Referer': 'https://www.capcut.com/',
-      },
-      timeout: 10000,
-    });
-
-    const critical = ['sessionid', 'passport_csrf_token', 'passport', 'sid_tt', 'ttwid'];
-    const present = critical.filter(name => cookies.some(c => c.name === name));
-    const missing = critical.filter(name => !cookies.some(c => c.name === name));
-
-    const accountData = infoResp.data?.data;
-    const hasUser = accountData?.user && !accountData?.error_code && !accountData?.description?.includes('expired');
-    const loggedIn = !!hasUser;
-    const userId = accountData?.user?.uid || accountData?.user?.user_id || null;
-
+    // Verify via edit-api workspace (accepts sessionid_ss-only exports)
+    const crypto = await import('node:crypto');
+    const ts = Math.floor(Date.now() / 1000);
+    const pathWs = '/cc/v1/workspace/get_user_workspaces';
+    const u = pathWs.slice(-7);
+    const sign = crypto.createHash('md5')
+      .update(`9e2c|${u}|7|15.4.0|${ts}|web|11ac`).digest('hex');
+    let workspaceData = null;
+    let loggedIn = false;
+    let userId = null;
+    let verifyError = null;
+    try {
+      const wsResp = await axios.post(
+        'https://edit-api-sg.capcut.com/cc/v1/workspace/get_user_workspaces',
+        { cursor: '0', count: 10, need_convert_workspace: true },
+        {
+          headers: {
+            Cookie: cookieData.header,
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Referer': 'https://www.capcut.com/',
+            appid: '348188', pf: '7', appvr: '15.4.0', loc: 'sg', lan: 'en-US',
+            'sign-ver': '1', 'app-sdk-version': '127.0.0', tdid: 'web',
+            'device-time': String(ts), sign,
+            'x-tt-passport-csrf-token': cookieData.csrfToken || '',
+          },
+          timeout: 15000,
+          validateStatus: () => true,
+        }
+      );
+      workspaceData = wsResp.data;
+      loggedIn = String(wsResp.data?.ret) === '0' || wsResp.data?.errmsg === 'SUCCESS';
+      const owner = wsResp.data?.data?.workspace_infos?.[0]?.owner;
+      userId = owner ? String(owner) : null;
+      if (!loggedIn) verifyError = wsResp.data?.errmsg || `ret=${wsResp.data?.ret}`;
+    } catch (e) {
+      verifyError = e.message;
+    }
+    const hasSessionCookie = cookies.some(c =>
+      ['sessionid', 'sessionid_ss', 'sid_tt', 'sid_ucp_v1'].includes(c.name)
+    );
+    const present = [];
+    if (hasSessionCookie) present.push('sessionid/sessionid_ss');
+    if (cookies.some(c => c.name === 'passport_csrf_token')) present.push('passport_csrf_token');
+    if (cookies.some(c => c.name === 'ttwid')) present.push('ttwid');
     const cacheInfo = getCacheInfo();
     return c.json({
       loggedIn,
       userId,
       cookieCount: cookies.length,
       critical: present,
-      missing,
-      error: loggedIn ? null : (accountData?.description || 'Session expired or not logged in'),
-      accountInfo: accountData,
+      missing: [],
+      error: loggedIn ? null : (verifyError || 'Session expired or not logged in'),
+      workspace: workspaceData?.data?.workspace_infos?.[0] || null,
       cached: cacheInfo.cached,
       cacheAgeSec: cacheInfo.cached ? Math.floor(cacheInfo.ageMs / 1000) : 0,
       cacheExpiresSec: cacheInfo.cached ? Math.floor(cacheInfo.expiresMs / 1000) : 0,
