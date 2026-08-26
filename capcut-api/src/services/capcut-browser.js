@@ -270,76 +270,68 @@ export class CapCutBrowser {
    * Tutup semua modal yang nge-block editor (promo, sign-in, dll).
    * CapCut sering banget munculin modal "Dreamina", "Subscribe", dll.
    */
-  async _closeModals() {
-    // Fast fail-forward: never block the pipeline for more than ~6s total.
-    const deadline = Date.now() + 6000;
-    let closed = 0;
-    while (Date.now() < deadline) {
-      try {
-        const acted = await Promise.race([
-          this.page.evaluate(() => {
-            let n = 0;
-            // Close icons
-            for (const el of document.querySelectorAll(
-              '.lv-modal-close-icon, [class*="modal-close"], [aria-label="Close"], [aria-label="close"], button[class*="close"]'
-            )) {
-              try { el.click(); n++; } catch (_) {}
-            }
-            // Cookie / consent banners
-            for (const el of document.querySelectorAll('button')) {
-              const t = (el.textContent || '').trim().toLowerCase();
-              if (['accept', 'agree', 'got it', 'ok', 'allow', '关闭', '同意'].includes(t)) {
-                try { el.click(); n++; } catch (_) {}
-              }
-            }
-            // Masks
-            for (const el of document.querySelectorAll('.lv-modal-mask')) {
-              try { el.click(); n++; } catch (_) {}
-            }
-            return n;
-          }),
-          new Promise((r) => setTimeout(() => r(0), 1500)),
-        ]);
-        closed += acted || 0;
-        await this.page.keyboard.press('Escape').catch(() => {});
-        await new Promise((r) => setTimeout(r, 250));
-        // Stop early if no dialogs left
-        const still = await Promise.race([
-          this.page.evaluate(() => {
-            const sels = ['.lv-modal-mask', '.lv-modal-wrapper', '[class*="sign_in_panel"]', '[role="dialog"]'];
-            return sels.some((s) => {
-              for (const el of document.querySelectorAll(s)) {
-                const st = getComputedStyle(el);
-                if (st.display !== 'none' && st.visibility !== 'hidden' && el.offsetWidth > 20) return true;
-              }
-              return false;
-            });
-          }),
-          new Promise((r) => setTimeout(() => r(false), 1000)),
-        ]);
-        if (!still) break;
-        if (!acted) break; // nothing to click, don't spin
-      } catch (_) {
-        break;
-      }
+  /** page.$ with hard timeout — CDP can hang on CapCut WebGL pages */
+  async _$(sel, ms = 1500) {
+    try {
+      return await Promise.race([
+        this.page.$(sel),
+        new Promise((r) => setTimeout(() => r(null), ms)),
+      ]);
+    } catch (_) {
+      return null;
     }
-    if (closed > 0) logger.info({ closed }, 'Closed blocking modals');
+  }
+
+  /**
+   * Close modals WITHOUT page.evaluate — evaluate hangs on CapCut WebGL SPA.
+   * Only keyboard + short-timeout selector clicks. Hard ceiling ~3s.
+   */
+  async _closeModals() {
+    const clickSel = async (sel, ms = 400) => {
+      try {
+        const handle = await this._$(sel, ms);
+        if (!handle) return false;
+        await Promise.race([
+          handle.click({ delay: 20 }).catch(() => {}),
+          new Promise((r) => setTimeout(r, ms)),
+        ]);
+        try { await handle.dispose(); } catch (_) {}
+        return true;
+      } catch (_) {
+        return false;
+      }
+    };
+
+    let closed = 0;
+    for (let i = 0; i < 3; i++) {
+      try { await this.page.keyboard.press('Escape'); } catch (_) {}
+      await sleep(120);
+    }
+    for (const sel of [
+      '.lv-modal-close-icon',
+      'button[aria-label="Close"]',
+      'button[aria-label="close"]',
+      '[class*="modal-close"]',
+      '.lv-modal-mask',
+    ]) {
+      if (await clickSel(sel, 300)) closed++;
+    }
+    try { await this.page.keyboard.press('Escape'); } catch (_) {}
+    if (closed > 0) logger.info({ closed }, 'Closed blocking modals (selector clicks)');
     return closed;
   }
 
   async _checkEditorSignInModal() {
     try {
-      const signIn = await this.page.$(SELECTORS.signInModal);
-      if (signIn) {
-        const visible = await signIn.evaluate(el => el.offsetParent !== null).catch(() => false);
-        if (visible) {
-          logger.warn('Editor shows sign-in modal — session may be incomplete; continuing to try export');
-          // Try dismiss once
-          await this.page.keyboard.press('Escape').catch(() => {});
-        }
+      const handle = await this._$(SELECTORS.signInModal, 500);
+      if (handle) {
+        logger.warn('Sign-in modal selector present — dismissing with Escape');
+        await this.page.keyboard.press('Escape').catch(() => {});
+        try { await handle.dispose(); } catch (_) {}
       }
     } catch (_) {}
   }
+
 
   /**
    * Render template dengan gambar-gambar yang diberikan.
@@ -384,20 +376,19 @@ export class CapCutBrowser {
       throw new Error(`Editor URL returned 404: ${sanitizedEditorUrl}. Template mungkin tidak valid atau URL pattern berubah.`);
     }
 
-    progress(15, 'Waiting editor SPA to load (heavy)');
-    await sleep(15000); // kasih waktu buat WebGL init
+    progress(15, 'Waiting editor SPA to load');
+    await sleep(4000);
 
-    // Tutup modal promo yang sering nge-block editor
     progress(18, 'Closing blocking modals');
-    await this._closeModals();
+    await Promise.race([this._closeModals(), sleep(3000)]);
+    await Promise.race([this._checkEditorSignInModal(), sleep(800)]);
 
-    // Cek apakah sign-in modal muncul = session editor tidak valid
-    await this._checkEditorSignInModal();
-
+    progress(22, 'Checking editor canvas');
     try {
-      await this.page.waitForSelector(SELECTORS.editorReady, { timeout: 60000 });
+      await this.page.waitForSelector(SELECTORS.editorReady, { timeout: 8000 });
+      progress(28, 'Editor canvas detected');
     } catch (_) {
-      logger.warn('Editor ready selector not found, continuing anyway');
+      logger.warn('Editor ready selector not found within 8s — continuing');
     }
 
     progress(30, 'Editor ready, uploading images');
@@ -406,37 +397,34 @@ export class CapCutBrowser {
     // (CapCut SPA butuh waktu buat render panel upload setelah editor ready)
     let fileInput = null;
     for (let attempt = 1; attempt <= 3 && !fileInput; attempt++) {
-      fileInput = await this.page.$(SELECTORS.fileInput);
+      progress(30 + attempt, `Looking for file input (try ${attempt}/3)`);
+      fileInput = await this._$(SELECTORS.fileInput, 2000);
       if (fileInput) break;
-
-      logger.info({ attempt }, 'file input belum muncul, coba trigger upload button...');
-      try {
-        // Click any upload-trigger element (class-based, bukan :has-text)
-        const clicked = await this.page.evaluate(() => {
-          const btns = Array.from(document.querySelectorAll('button, [class*="upload" i], [class*="import" i]'));
-          const target = btns.find(el => {
-            const t = (el.innerText || el.textContent || '').toLowerCase();
-            const cls = (el.className || '').toString().toLowerCase();
-            return t.includes('upload') || t.includes('import') || cls.includes('upload');
-          });
-          if (target) { target.click(); return true; }
-          return false;
-        });
-        if (clicked) await sleep(1500);
-        await this._closeModals();
-        fileInput = await this.page.$(SELECTORS.fileInput);
-      } catch (e) {
-        logger.warn({ err: e.message, attempt }, 'Cannot find upload trigger');
+      logger.info({ attempt }, 'file input belum muncul, coba trigger upload...');
+      const btn = await this._$('button[class*="upload" i], [class*="upload" i] button', 1000);
+      if (btn) {
+        try { await Promise.race([btn.click({ delay: 20 }), sleep(800)]); } catch (_) {}
+        await sleep(600);
       }
-      if (!fileInput) await sleep(2000);
+      await Promise.race([this._closeModals(), sleep(1200)]);
+      fileInput = await this._$(SELECTORS.fileInput, 2000);
+      if (!fileInput) await sleep(600);
     }
     if (!fileInput) {
-      throw new Error('Upload file input not found in CapCut editor after 3 retries. UI CapCut mungkin berubah — jalankan scripts/inspect-editor.js untuk update selector.');
+      throw new Error(
+        'Upload file input not found in CapCut editor after 3 retries. ' +
+        'Editor may still be loading or session incomplete (sign-in overlay).'
+      );
     }
 
-    await fileInput.uploadFile(...imagePaths);
+    progress(40, 'Uploading images to editor');
+    await Promise.race([
+      fileInput.uploadFile(...imagePaths),
+      sleep(15000).then(() => { throw new Error('uploadFile timeout 15s'); }),
+    ]);
     progress(45, 'Images uploaded, waiting for editor to apply');
-    await sleep(15000); // kasih waktu buat process images & apply ke timeline
+    await sleep(4000);
+    await Promise.race([this._closeModals(), sleep(1500)]);
 
     // Tutup modal yang mungkin muncul setelah upload (e.g. "Image size too large" warning)
     await this._closeModals();
@@ -445,11 +433,11 @@ export class CapCutBrowser {
     progress(60, 'Triggering render/export');
     try {
       // Tunggu sampai button Export tidak disabled (images sudah applied)
-      await this.page.waitForSelector(SELECTORS.renderButtonActive, { timeout: 30000 });
+      await this.page.waitForSelector(SELECTORS.renderButtonActive, { timeout: 10000 });
     } catch (_) {
       logger.warn('Export button masih disabled atau tidak ketemu. Coba click paksa...');
     }
-    const exportBtn = await this.page.$(SELECTORS.renderButton);
+    const exportBtn = await this._$(SELECTORS.renderButton, 3000);
     if (!exportBtn) {
       throw new Error('Export button tidak ditemukan di editor. UI CapCut mungkin berubah.');
     }
