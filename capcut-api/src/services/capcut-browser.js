@@ -546,83 +546,168 @@ export class CapCutBrowser {
     } catch (_) {}
     await Promise.race([this._closeModals(), sleep(1000)]);
 
-    progress(75, 'Rendering in progress');
+    progress(70, 'Watching network for video URL');
     let downloadUrl = null;
     const capturedUrls = new Set();
+    const jsonHints = [];
+
+    const looksLikeVideoUrl = (u, ct = '', len = 0) => {
+      if (!u || u.startsWith('blob:')) return false;
+      const low = u.toLowerCase();
+      if (len > 0 && len < 80_000) return false;
+      if (ct.includes('video/')) return true;
+      if (/\.mp4(\?|$)/i.test(low)) return true;
+      if (/\/media\/|\/video\/|vod-|bytevcloud|capcutcdn|ibyteimg|tos-.*-ve-|\.m3u8/i.test(low)) return true;
+      if (/draft_cover|thumbnail|sprite|cover_/.test(low)) return false;
+      return false;
+    };
+
+    const extractUrlFromJson = (text) => {
+      if (!text || text.length > 2_000_000) return null;
+      try {
+        const urls = text.match(/https?:\/\/[^"\\s]+\.mp4[^"\\s]*/gi) || [];
+        for (const u of urls) {
+          if (looksLikeVideoUrl(u)) return u.replace(/[\\]+$/,'');
+        }
+        const m =
+          text.match(/"(?:video_url|download_url|play_url|url|videoUrl)"\s*:\s*"(https?:[^"]+)"/i) ||
+          text.match(/"(https?:\/\/[^"]+\.mp4[^"]*)"/i);
+        if (m) return m[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/');
+      } catch (_) {}
+      return null;
+    };
 
     const onResponse = async (res) => {
       try {
         const u = res.url();
-        const ct = (res.headers()['content-type'] || '').toLowerCase();
         const status = res.status();
         if (status < 200 || status >= 400) return;
-        // CapCut CDN video URLs / content-type video
-        if (
-          ct.includes('video/') ||
-          /\.mp4(\?|$)/i.test(u) ||
-          /\/video\/|vod-|\.bytevcloud|capcut\.com.*\.(mp4|m3u8)/i.test(u)
-        ) {
-          // Skip tiny / preview / thumbnail responses
-          const len = parseInt(res.headers()['content-length'] || '0', 10);
-          if (len > 0 && len < 50_000) return;
+        const headers = res.headers() || {};
+        const ct = (headers['content-type'] || '').toLowerCase();
+        const len = parseInt(headers['content-length'] || '0', 10);
+
+        if (looksLikeVideoUrl(u, ct, len)) {
           capturedUrls.add(u);
           if (!downloadUrl) {
             downloadUrl = u;
-            logger.info({ url: u.slice(0, 120), ct, len }, 'Captured video URL from network');
+            logger.info({ url: u.slice(0, 140), ct, len }, 'Captured video URL from network');
+          }
+          return;
+        }
+
+        if (ct.includes('json') || /render|export|compose|download|get_video|play_info/i.test(u)) {
+          let text = '';
+          try { text = await res.text(); } catch (_) { return; }
+          const found = extractUrlFromJson(text);
+          if (found) {
+            capturedUrls.add(found);
+            if (!downloadUrl) {
+              downloadUrl = found;
+              logger.info({ url: found.slice(0, 140), from: u.slice(0, 80) }, 'Captured video URL from JSON');
+            }
+          } else if (text && /render|export|task/i.test(u)) {
+            jsonHints.push({ u: u.slice(0, 100), preview: text.slice(0, 120) });
           }
         }
       } catch (_) {}
     };
     this.page.on('response', onResponse);
 
+    let cdp;
+    try {
+      cdp = await this.page.createCDPSession();
+      await cdp.send('Network.enable');
+      cdp.on('Network.responseReceived', (evt) => {
+        try {
+          const u = evt?.response?.url || '';
+          const ct = (evt?.response?.mimeType || '').toLowerCase();
+          if (looksLikeVideoUrl(u, ct)) {
+            capturedUrls.add(u);
+            if (!downloadUrl) {
+              downloadUrl = u;
+              logger.info({ url: u.slice(0, 140) }, 'CDP captured video URL');
+            }
+          }
+        } catch (_) {}
+      });
+    } catch (e) {
+      logger.warn({ err: e.message }, 'CDP Network.enable failed');
+    }
+
+    progress(75, 'Rendering in progress');
     const start = Date.now();
-    const renderTimeout = config.browser.renderTimeout;
+    const renderTimeout = config.browser.renderTimeout || 300000;
 
     while (!downloadUrl && Date.now() - start < renderTimeout) {
-      await sleep(3000);
+      await sleep(2000);
+      const elapsed = Date.now() - start;
+      progress(75 + Math.min(20, Math.floor(elapsed / renderTimeout * 20)), `Waiting export video (${Math.round(elapsed/1000)}s)`);
 
-      // Fallback DOM scrape
       try {
-        const domUrl = await this.page.$eval(SELECTORS.renderDone, el => {
-          if (el.tagName === 'A' && el.href) return el.href;
-          return null;
-        }).catch(() => null);
+        const domUrl = await Promise.race([
+          this.page.evaluate(() => {
+            const as = [...document.querySelectorAll('a[download], a[href*=".mp4"], video source, video')];
+            for (const el of as) {
+              const href = el.href || el.src || el.getAttribute('src');
+              if (href && /\.mp4|video/i.test(href) && !href.startsWith('blob:')) return href;
+            }
+            return null;
+          }),
+          sleep(1500).then(() => null),
+        ]);
         if (domUrl) {
           downloadUrl = domUrl;
           capturedUrls.add(domUrl);
         }
       } catch (_) {}
 
-      // Progress text
-      try {
-        const pctText = await this.page.$eval(SELECTORS.renderProgress, el => {
-          return el.getAttribute('aria-valuenow') ||
-            el.textContent?.match(/(\d+)\s*%/)?.[1] || null;
-        }).catch(() => null);
-        if (pctText) {
-          const pct = parseInt(pctText, 10);
-          if (pct < 100) progress(75 + Math.floor(pct * 0.2), `Rendering ${pct}%`);
-        }
-      } catch (_) {}
+      if (!downloadUrl && elapsed < 60000 && elapsed > 8000 && Math.floor(elapsed / 2000) % 8 === 0) {
+        try {
+          await Promise.race([
+            this.page.evaluate(() => {
+              const soft = /export|confirm|done|ok|download/i;
+              const btn = [...document.querySelectorAll('button')].find(b =>
+                soft.test((b.innerText || '').trim()) && !b.disabled);
+              if (btn) btn.click();
+            }),
+            sleep(1500),
+          ]);
+        } catch (_) {}
+      }
     }
 
     this.page.off('response', onResponse);
+    try { if (cdp) cdp.removeAllListeners('Network.responseReceived'); } catch (_) {}
 
     if (!downloadUrl) {
-      // Last resort: any captured URL
       const first = [...capturedUrls][0];
       if (first) downloadUrl = first;
     }
 
     if (!downloadUrl) {
+      logger.warn({ jsonHints: jsonHints.slice(-5), captured: [...capturedUrls].slice(0, 5) }, 'No video URL after wait');
       throw new Error(
-        'Render timeout — tidak ada URL video terdeteksi. ' +
-        'Coba template lain, atau naikkan RENDER_TIMEOUT. Pastikan session masih valid (cek /login/status).'
+        'Render timeout — tidak ada URL video terdeteksi setelah export. ' +
+        'Session editor mungkin tidak lengkap atau export tidak terpicu di headless. ' +
+        'Gunakan engine=local atau login:manual (HEADLESS=false).'
       );
     }
 
     progress(95, 'Downloading rendered video');
-    const videoBuffer = await this._downloadVideo(downloadUrl);
+    let videoBuffer;
+    if (downloadUrl.startsWith('blob:')) {
+      const arr = await Promise.race([
+        this.page.evaluate(async (url) => {
+          const r = await fetch(url);
+          const ab = await r.arrayBuffer();
+          return Array.from(new Uint8Array(ab));
+        }, downloadUrl),
+        sleep(60000).then(() => { throw new Error('blob download timeout'); }),
+      ]);
+      videoBuffer = Buffer.from(arr);
+    } else {
+      videoBuffer = await this._downloadVideo(downloadUrl);
+    }
     progress(100, 'Done');
 
     return { videoBuffer, videoUrl: downloadUrl, format: 'mp4' };
