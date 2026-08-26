@@ -126,11 +126,11 @@ export async function runRenderJob(job, input) {
     try {
       setProgress(30, 'CapCut failed; falling back to local renderer');
       const local = await renderLocalVideo(imagePaths, {
-        videoName: String(template?.title || template?.id || job.id).slice(0, 40),
+        videoName: String(template?.title || template?.id || tplInput || job.id).slice(0, 40),
         onProgress: (pct, msg) => setProgress(30 + Math.floor(pct * 0.65), msg),
       });
       const buf = fs.readFileSync(local.videoPath);
-      const filename = sanitizeFilename(template?.title || job.id);
+      const filename = sanitizeFilename(String(template?.title || tplInput || job.id));
       const localPath = saveVideo(`${filename}_${job.id}`, buf, 'mp4');
       const publicUrl = videoPublicUrl(`${filename}_${job.id}`, 'mp4');
       job.videoPath = localPath;
