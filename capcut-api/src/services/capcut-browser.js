@@ -551,14 +551,31 @@ export class CapCutBrowser {
     const capturedUrls = new Set();
     const jsonHints = [];
 
+    // Real CapCut export CDN example (user-verified):
+    // https://v16-cc.capcut.com/.../video/tos/alisg/tos-alisg-ve-.../...?mime_type=video_mp4&a=348188
     const looksLikeVideoUrl = (u, ct = '', len = 0) => {
-      if (!u || u.startsWith('blob:')) return false;
+      if (!u || typeof u !== 'string') return false;
+      if (u.startsWith('blob:')) return false;
       const low = u.toLowerCase();
-      if (len > 0 && len < 80_000) return false;
+      // exclude obvious non-export assets
+      if (/draft_cover|thumbnail|sprite|cover_|\/cover\.|\/icon|_preview|watermark_only/i.test(low)) return false;
+
+      const isCapcutVideoHost =
+        /v\d+-cc\.capcut\.com/i.test(low) ||
+        /v\d+-capcut/i.test(low) ||
+        /capcutcdn/i.test(low) ||
+        /bytevcloud/i.test(low) ||
+        /ibyteimg/i.test(low) ||
+        /capcut\.com\/.*\/video\//i.test(low);
+
+      // Known export hosts: never reject on small content-length (redirects often have len~0)
+      if (!isCapcutVideoHost && len > 0 && len < 80_000) return false;
+
       if (ct.includes('video/')) return true;
+      if (/mime_type=video_mp4/i.test(low)) return true;
       if (/\.mp4(\?|$)/i.test(low)) return true;
+      if (isCapcutVideoHost && /\/video\/|\/media\/|tos-.*-ve-|vod-/i.test(low)) return true;
       if (/\/media\/|\/video\/|vod-|bytevcloud|capcutcdn|ibyteimg|tos-.*-ve-|\.m3u8/i.test(low)) return true;
-      if (/draft_cover|thumbnail|sprite|cover_/.test(low)) return false;
       return false;
     };
 
@@ -570,7 +587,7 @@ export class CapCutBrowser {
           if (looksLikeVideoUrl(u)) return u.replace(/[\\]+$/,'');
         }
         const m =
-          text.match(/"(?:video_url|download_url|play_url|url|videoUrl)"\s*:\s*"(https?:[^"]+)"/i) ||
+          text.match(/"(?:video_url|download_url|play_url|url|videoUrl|video_path|downloadUrl|playUrl|file_url)"\s*:\s*"(https?:[^"]+)"/i) ||
           text.match(/"(https?:\/\/[^"]+\.mp4[^"]*)"/i);
         if (m) return m[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/');
       } catch (_) {}
@@ -581,16 +598,27 @@ export class CapCutBrowser {
       try {
         const u = res.url();
         const status = res.status();
-        if (status < 200 || status >= 400) return;
         const headers = res.headers() || {};
         const ct = (headers['content-type'] || '').toLowerCase();
         const len = parseInt(headers['content-length'] || '0', 10);
+        // Follow redirect Location (CapCut CDN often 302 → v16-cc.capcut.com)
+        if (status >= 300 && status < 400) {
+          const loc = headers['location'] || headers['Location'];
+          if (loc && looksLikeVideoUrl(loc, '', 0)) {
+            capturedUrls.add(loc);
+            if (!downloadUrl) {
+              downloadUrl = loc;
+              logger.info({ url: loc.slice(0, 140), via: 'redirect' }, 'Captured video URL from redirect');
+            }
+          }
+        }
+        if (status < 200 || status >= 400) return;
 
         if (looksLikeVideoUrl(u, ct, len)) {
           capturedUrls.add(u);
           if (!downloadUrl) {
             downloadUrl = u;
-            logger.info({ url: u.slice(0, 140), ct, len }, 'Captured video URL from network');
+            logger.info({ url: u.slice(0, 140), ct, len, status }, 'Captured video URL from network');
           }
           return;
         }
@@ -621,11 +649,32 @@ export class CapCutBrowser {
         try {
           const u = evt?.response?.url || '';
           const ct = (evt?.response?.mimeType || '').toLowerCase();
+          const headers = evt?.response?.headers || {};
+          const loc = headers['location'] || headers['Location'];
+          if (loc && looksLikeVideoUrl(loc, '', 0)) {
+            capturedUrls.add(loc);
+            if (!downloadUrl) {
+              downloadUrl = loc;
+              logger.info({ url: loc.slice(0, 140) }, 'CDP captured redirect video URL');
+            }
+          }
           if (looksLikeVideoUrl(u, ct)) {
             capturedUrls.add(u);
             if (!downloadUrl) {
               downloadUrl = u;
               logger.info({ url: u.slice(0, 140) }, 'CDP captured video URL');
+            }
+          }
+        } catch (_) {}
+      });
+      cdp.on('Network.requestWillBeSent', (evt) => {
+        try {
+          const u = evt?.request?.url || '';
+          if (looksLikeVideoUrl(u, '', 0)) {
+            capturedUrls.add(u);
+            if (!downloadUrl) {
+              downloadUrl = u;
+              logger.info({ url: u.slice(0, 140) }, 'CDP captured video URL (request)');
             }
           }
         } catch (_) {}
