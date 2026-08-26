@@ -271,6 +271,98 @@ export class CapCutBrowser {
    * CapCut sering banget munculin modal "Dreamina", "Subscribe", dll.
    */
   /** page.$ with hard timeout — CDP can hang on CapCut WebGL pages */
+
+  async _uploadImages(imagePaths, progress) {
+    const absPaths = imagePaths.map((p) => path.resolve(p));
+    progress?.(32, 'Upload strategy: existing file inputs');
+    try {
+      const inputs = await Promise.race([
+        this.page.$$('input[type="file"]'),
+        sleep(2500).then(() => []),
+      ]);
+      if (inputs?.length) {
+        logger.info({ count: inputs.length }, 'Found file input(s)');
+        await Promise.race([
+          inputs[0].uploadFile(...absPaths),
+          sleep(12000).then(() => { throw new Error('uploadFile timeout'); }),
+        ]);
+        return { ok: true, via: 'file-input' };
+      }
+    } catch (e) {
+      logger.warn({ err: e.message }, 'Strategy 1 file-input failed');
+    }
+    progress?.(34, 'Upload strategy: file chooser triggers');
+    for (const sel of [
+      '[class*="upload" i]', '[class*="import" i]', '[data-testid*="upload" i]',
+      'button[class*="media" i]', '[class*="add-media" i]', '[class*="replace" i]',
+      '[class*="placeholder" i]', '[class*="empty-slot" i]', '[class*="material-slot" i]',
+      '[class*="slot-item" i]', '[class*="media-card" i]',
+    ]) {
+      try {
+        const el = await this._$(sel, 800);
+        if (!el) continue;
+        const chooserPromise = this.page.waitForFileChooser({ timeout: 2500 }).catch(() => null);
+        await Promise.race([el.click({ delay: 30 }), sleep(800)]);
+        const chooser = await chooserPromise;
+        if (chooser) {
+          await chooser.accept(absPaths);
+          return { ok: true, via: 'file-chooser', sel };
+        }
+        const inputs = await Promise.race([this.page.$$('input[type="file"]'), sleep(1000).then(() => [])]);
+        if (inputs?.length) {
+          await inputs[0].uploadFile(...absPaths);
+          return { ok: true, via: 'file-input-after-click', sel };
+        }
+      } catch (_) {}
+    }
+    progress?.(36, 'Upload strategy: slot clicks');
+    try {
+      const candidates = await Promise.race([
+        this.page.$$('[class*="replace" i], [class*="placeholder" i], [class*="slot" i], [class*="segment" i] img, [class*="track" i] img'),
+        sleep(2000).then(() => []),
+      ]);
+      for (const el of (candidates || []).slice(0, 8)) {
+        try {
+          const chooserPromise = this.page.waitForFileChooser({ timeout: 2000 }).catch(() => null);
+          await Promise.race([el.click({ delay: 20 }), sleep(600)]);
+          const chooser = await chooserPromise;
+          if (chooser) {
+            await chooser.accept([absPaths[0]]);
+            for (let i = 1; i < absPaths.length; i++) {
+              const c2 = this.page.waitForFileChooser({ timeout: 2000 }).catch(() => null);
+              await Promise.race([el.click({ delay: 20 }), sleep(500)]);
+              const ch = await c2;
+              if (ch) await ch.accept([absPaths[i]]);
+            }
+            return { ok: true, via: 'slot-chooser' };
+          }
+        } catch (_) {}
+      }
+    } catch (e) {
+      logger.warn({ err: e.message }, 'slot strategy failed');
+    }
+    progress?.(38, 'Upload strategy: CDP setFileInputFiles');
+    try {
+      const client = await this.page.createCDPSession();
+      const { root } = await Promise.race([
+        client.send('DOM.getDocument', { depth: -1 }),
+        sleep(3000).then(() => ({ root: null })),
+      ]);
+      if (root?.nodeId) {
+        const { nodeId } = await client.send('DOM.querySelector', {
+          nodeId: root.nodeId, selector: 'input[type=file]',
+        }).catch(() => ({ nodeId: 0 }));
+        if (nodeId) {
+          await client.send('DOM.setFileInputFiles', { nodeId, files: absPaths });
+          return { ok: true, via: 'cdp' };
+        }
+      }
+    } catch (e) {
+      logger.warn({ err: e.message }, 'CDP upload failed');
+    }
+    return { ok: false, via: null };
+  }
+
   async _$(sel, ms = 1500) {
     try {
       return await Promise.race([
@@ -391,78 +483,69 @@ export class CapCutBrowser {
       logger.warn('Editor ready selector not found within 8s — continuing');
     }
 
-    progress(30, 'Editor ready, uploading images');
-
-    // Upload images via file input — retry sampai 3x kalau input gak langsung muncul
-    // (CapCut SPA butuh waktu buat render panel upload setelah editor ready)
-    let fileInput = null;
-    for (let attempt = 1; attempt <= 3 && !fileInput; attempt++) {
-      progress(30 + attempt, `Looking for file input (try ${attempt}/3)`);
-      fileInput = await this._$(SELECTORS.fileInput, 2000);
-      if (fileInput) break;
-      logger.info({ attempt }, 'file input belum muncul, coba trigger upload...');
-      const btn = await this._$('button[class*="upload" i], [class*="upload" i] button', 1000);
-      if (btn) {
-        try { await Promise.race([btn.click({ delay: 20 }), sleep(800)]); } catch (_) {}
-        await sleep(600);
-      }
-      await Promise.race([this._closeModals(), sleep(1200)]);
-      fileInput = await this._$(SELECTORS.fileInput, 2000);
-      if (!fileInput) await sleep(600);
-    }
-    if (!fileInput) {
+        progress(30, 'Editor ready, uploading images');
+    await sleep(3000);
+    await Promise.race([this._closeModals(), sleep(1500)]);
+    const uploadResult = await this._uploadImages(imagePaths, progress);
+    if (!uploadResult.ok) {
       throw new Error(
-        'Upload file input not found in CapCut editor after 3 retries. ' +
-        'Editor may still be loading or session incomplete (sign-in overlay).'
+        'Could not upload images into CapCut editor (no file input / file chooser). ' +
+        'Try HEADLESS=false + login:manual, or use engine=local.'
       );
     }
-
-    progress(40, 'Uploading images to editor');
-    await Promise.race([
-      fileInput.uploadFile(...imagePaths),
-      sleep(15000).then(() => { throw new Error('uploadFile timeout 15s'); }),
-    ]);
-    progress(45, 'Images uploaded, waiting for editor to apply');
+    logger.info({ via: uploadResult.via }, 'Images uploaded into editor');
+    progress(45, `Images uploaded via ${uploadResult.via}`);
     await sleep(4000);
     await Promise.race([this._closeModals(), sleep(1500)]);
 
-    // Tutup modal yang mungkin muncul setelah upload (e.g. "Image size too large" warning)
-    await this._closeModals();
-
-    // Klik Export / Render — tunggu button AKTIF (tidak disabled)
-    progress(60, 'Triggering render/export');
-    try {
-      // Tunggu sampai button Export tidak disabled (images sudah applied)
-      await this.page.waitForSelector(SELECTORS.renderButtonActive, { timeout: 10000 });
-    } catch (_) {
-      logger.warn('Export button masih disabled atau tidak ketemu. Coba click paksa...');
-    }
-    const exportBtn = await this._$(SELECTORS.renderButton, 3000);
-    if (!exportBtn) {
-      throw new Error('Export button tidak ditemukan di editor. UI CapCut mungkin berubah.');
-    }
-    await exportBtn.click();
+        progress(60, 'Triggering render/export');
     await sleep(2000);
-
-    // Setelah klik Export, mungkin muncul dialog export settings → klik Export/Confirm lagi.
-    // NOTE: ganti :has-text() (Playwright-only) dengan evaluate + textContent filter.
+    await Promise.race([this._closeModals(), sleep(1000)]);
+    let exportClicked = false;
     try {
-      const clicked = await this.page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const target = btns.find(el => {
-          const t = (el.innerText || el.textContent || '').toLowerCase().trim();
-          return t === 'export' || t === 'confirm' || t === 'render' || t === 'done';
-        });
-        if (!target) return false;
-        if (target.classList.contains('lv-btn-disabled') || target.disabled) return false;
-        target.click();
-        return true;
-      });
-      if (clicked) logger.info('Clicked confirm export button');
+      await this.page.waitForSelector(SELECTORS.renderButtonActive, { timeout: 8000 }).catch(() => null);
+      const exportBtn = await this._$(SELECTORS.renderButton, 2500);
+      if (exportBtn) {
+        await Promise.race([exportBtn.click({ delay: 40 }), sleep(1500)]);
+        exportClicked = true;
+        logger.info('Clicked export via class selector');
+      }
+    } catch (e) {
+      logger.warn({ err: e.message }, 'class export click failed');
+    }
+    if (!exportClicked) {
+      try {
+        const clicked = await Promise.race([
+          this.page.evaluate(() => {
+            const soft = /export|render|download|导出|匯出/i;
+            const btns = [...document.querySelectorAll('button, [role="button"], a')];
+            const target = btns.find(el => soft.test((el.innerText || '').trim()) && el.offsetParent);
+            if (!target) return false;
+            target.click();
+            return true;
+          }),
+          new Promise((r) => setTimeout(() => r(false), 3000)),
+        ]);
+        if (clicked) { exportClicked = true; logger.info('Clicked export via text'); }
+      } catch (_) {}
+    }
+    if (!exportClicked) logger.warn('Export button not found — listening for video URL anyway');
+    await sleep(1500);
+    try {
+      const clicked = await Promise.race([
+        this.page.evaluate(() => {
+          const btns = [...document.querySelectorAll('button')];
+          const target = btns.find(el => /^(export|confirm|render|done|ok)$/i.test((el.innerText || '').trim()));
+          if (!target || target.disabled) return false;
+          target.click();
+          return true;
+        }),
+        new Promise((r) => setTimeout(() => r(false), 2500)),
+      ]);
+      if (clicked) logger.info('Clicked confirm export');
     } catch (_) {}
-    await this._closeModals();
+    await Promise.race([this._closeModals(), sleep(1000)]);
 
-    // Network intercept — lebih reliable daripada DOM scrape untuk URL video
     progress(75, 'Rendering in progress');
     let downloadUrl = null;
     const capturedUrls = new Set();
